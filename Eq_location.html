@@ -1,0 +1,1214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>SAC Waveform Picker + Wadati + Hypocentral Circles + Chord Epicenter + Precise Depth</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.25.1/full/pyodide.js"></script>
+
+<style>
+  :root{
+    --bg:#0b0f19; --text:#e5e7eb; --muted:#94a3b8; --border:rgba(148,163,184,.2);
+    --red:#ef4444; --green:#22c55e; --cyan:#38bdf8; --amber:#f59e0b;
+    --mono: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;
+    --sans: ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Arial;
+    --shadow:0 12px 30px rgba(0,0,0,.35);
+  }
+  body{ margin:0; background:linear-gradient(180deg,var(--bg),#070a12); color:var(--text); font-family:var(--sans); }
+  header{ position:sticky; top:0; z-index:50; background:rgba(15,23,42,.75); backdrop-filter: blur(10px); border-bottom:1px solid var(--border); }
+  .wrap{ max-width:1450px; margin:0 auto; padding:14px 16px; }
+  h1{ margin:0; font-size:16px; font-weight:800; }
+  .sub{ margin:6px 0 0; font-size:12px; color:var(--muted); line-height:1.35;}
+  .grid{ max-width:1450px; margin:0 auto; padding:16px; display:grid; grid-template-columns:380px 1fr; gap:14px; }
+  .card{ background:rgba(15,23,42,.72); border:1px solid var(--border); border-radius:14px; box-shadow:var(--shadow); overflow:hidden; }
+  .card h2{ margin:0; padding:12px; font-size:13px; font-weight:800; border-bottom:1px solid var(--border); background:rgba(16,28,54,.7); }
+  .pad{ padding:12px; }
+  .row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .btn{ appearance:none; border:1px solid var(--border); background:rgba(56,189,248,.12); color:var(--text); padding:8px 10px; border-radius:10px; cursor:pointer; font-size:12px; font-weight:700; }
+  .btn:hover{ border-color:rgba(56,189,248,.6); }
+  .btn.red{ background:rgba(239,68,68,.12); }
+  .btn.green{ background:rgba(34,197,94,.12); }
+  .btn.amber{ background:rgba(245,158,11,.12); }
+  .btn.gray{ background:rgba(148,163,184,.10); }
+  .lbl{ font-size:12px; color:var(--muted); }
+  input[type="number"], select{
+    padding:6px 8px; border-radius:10px; border:1px solid var(--border);
+    background:rgba(148,163,184,.08); color:var(--text); font-family:var(--mono); font-size:12px;
+  }
+  input[type="number"]{ width:92px; }
+  input[type="file"]{ color:var(--muted); font-size:12px; }
+  .list{ max-height:240px; overflow:auto; border:1px solid var(--border); border-radius:12px; background:rgba(148,163,184,.05); }
+  .list-item{ padding:8px 10px; border-bottom:1px solid rgba(148,163,184,.12); cursor:pointer; font-size:12px; display:flex; justify-content:space-between; gap:10px; }
+  .list-item:hover{ background:rgba(56,189,248,.08); }
+  .list-item.active{ background:rgba(56,189,248,.14); }
+  .tag{ font-family:var(--mono); font-size:11px; color:var(--muted); }
+  .mono{ font-family:var(--mono); }
+  .sep{ height:10px; }
+  .small{ font-size:11px; color:var(--muted); }
+  table{ width:100%; border-collapse:collapse; font-size:12px; }
+  th,td{ border-bottom:1px solid rgba(148,163,184,.12); padding:6px 8px; text-align:left; }
+  th{ color:var(--muted); font-weight:700; }
+  .checks{ max-height:200px; overflow:auto; border:1px solid var(--border); border-radius:12px; background:rgba(148,163,184,.05); padding:8px; }
+  .checks label{ display:flex; gap:8px; align-items:center; padding:4px 2px; font-size:12px; }
+  .rightcol{ display:grid; grid-template-rows:auto auto; gap:14px; }
+  .canvasBox{ width:100%; border-radius:12px; border:1px solid rgba(148,163,184,.18); background:rgba(0,0,0,.22); overflow:hidden; }
+  .canvasBox .titlebar{ display:flex; justify-content:space-between; align-items:center; padding:8px 10px; border-bottom:1px solid rgba(148,163,184,.14); background:rgba(2,6,23,.35); font-size:12px; color:rgba(229,231,235,.85); }
+  canvas{ display:block; width:100%; height:100%; background:transparent; }
+  #waveBox{ height:640px; }
+  #wadatiBox{ height:320px; }
+  #map{ height:520px; width:100%; border-radius:12px; border:1px solid rgba(148,163,184,.18); overflow:hidden; }
+  #coordBox{
+    position:absolute; right:10px; bottom:10px; z-index:999;
+    background:rgba(2,6,23,.65); border:1px solid rgba(148,163,184,.25);
+    border-radius:10px; padding:6px 8px; font-size:12px; color:rgba(229,231,235,.9);
+    font-family:var(--mono);
+    pointer-events:none;
+  }
+</style>
+</head>
+
+<body>
+<header>
+  <div class="wrap">
+    <h1>Hypocentral circles (r = Dhyp) → pairwise chords → epicenter → depth (geodesic)</h1>
+    <div class="sub">
+      Depth improved by using geodesic epicentral distance (Haversine) and robust aggregation (median ± MAD-derived σ).
+      Circles remain drawn with <span class="mono">radius = Dhyp (km) × 1000</span> meters.
+    </div>
+  </div>
+</header>
+
+<div class="grid">
+  <div class="card">
+    <h2>1) Load SAC files</h2>
+    <div class="pad">
+      <div class="row">
+        <input id="fileInput" type="file" multiple accept=".sac,.SAC,.s"/>
+        <button class="btn" id="btnLoad">Load SAC files</button>
+      </div>
+      <div class="sep"></div>
+      <div class="lbl" id="pyStatus">Pyodide: not loaded</div>
+    </div>
+
+    <h2>2) Stations + Picking</h2>
+    <div class="pad">
+      <div class="list" id="stationList"></div>
+      <div class="sep"></div>
+      <div class="row">
+        <button class="btn red" id="btnPickP">Pick P</button>
+        <button class="btn green" id="btnPickS">Pick S</button>
+        <span class="lbl">Mode: <span class="mono" id="pickMode">P</span></span>
+      </div>
+      <div class="sep"></div>
+      <div class="row">
+        <button class="btn gray" id="btnClearStation">Clear current picks</button>
+        <button class="btn gray" id="btnClearAll">Clear all picks</button>
+      </div>
+      <div class="sep"></div>
+      <div class="small">Waveform: wheel zoom (auto Y), drag pan, dbl-click reset, click to pick. P=red, S=green.</div>
+    </div>
+
+    <h2>3) Picks Summary</h2>
+    <div class="pad">
+      <table>
+        <thead><tr><th>Station</th><th>P (UTC)</th><th>S (UTC)</th></tr></thead>
+        <tbody id="picksTable"></tbody>
+      </table>
+    </div>
+
+    <h2>4) Wadati + Hypocentral Circles + Chords + Depth</h2>
+    <div class="pad">
+      <div class="row">
+        <button class="btn amber" id="btnWadati">Compute Wadati</button>
+        <div class="lbl">To (UTC): <span class="mono" id="originTime">-</span></div>
+        <div class="lbl">Vp/Vs: <span class="mono" id="vpvsOut">-</span></div>
+      </div>
+
+      <div class="sep"></div>
+
+      <div class="row">
+        <div class="lbl">Vp (km/s):</div>
+        <input id="vpIn" type="number" value="6.5" step="0.1" min="1" max="10"/>
+        <div class="lbl">Vp/Vs:</div>
+        <input id="vpvsIn" type="number" value="1.73" step="0.01" min="1.2" max="2.2"/>
+      </div>
+
+      <div class="sep"></div>
+
+      <div class="row"><div class="lbl">Choose exactly 3 stations (need P & S):</div></div>
+      <div class="checks" id="triChecks"></div>
+
+      <div class="sep"></div>
+
+      <div class="row">
+        <button class="btn" id="btnSolve">Solve by Chords (circles r=Dhyp)</button>
+        <div class="lbl">Basemap:</div>
+        <select id="basemapSel">
+          <option value="imagery">Satellite (Esri)</option>
+          <option value="topo">Topography (OpenTopoMap)</option>
+        </select>
+      </div>
+
+      <div class="sep"></div>
+      <div class="lbl">Epicenter: <span class="mono" id="epiOut">-</span></div>
+      <div class="lbl">Depth (robust): <span class="mono" id="depthOut">-</span></div>
+
+      <div class="sep"></div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Station</th>
+            <th>dt = Ts−Tp (s)</th>
+            <th>Dhyp (formula) km</th>
+            <th>Dhyp (slowness) km</th>
+            <th>|ΔD| km</th>
+            <th>rel Δ</th>
+          </tr>
+        </thead>
+        <tbody id="DhypCheckTable"></tbody>
+      </table>
+
+      <div class="sep"></div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Station</th>
+            <th>Dhyp (km)</th>
+            <th>Depi (km, geodesic)</th>
+            <th>h_i (km)</th>
+          </tr>
+        </thead>
+        <tbody id="depthTable"></tbody>
+      </table>
+
+      <div class="small">If any two circles do not overlap, the chord is undefined (solve will stop).</div>
+    </div>
+  </div>
+
+  <div class="rightcol">
+    <div class="card">
+      <h2>Waveform Panel</h2>
+      <div class="pad">
+        <div class="canvasBox" id="waveBox">
+          <div class="titlebar"><div>Seismogram</div><div class="mono" id="waveMeta">-</div></div>
+          <canvas id="waveCanvas"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Wadati Panel + Map</h2>
+      <div class="pad" style="display:grid;grid-template-columns:460px 1fr;gap:14px;">
+        <div class="canvasBox" id="wadatiBox">
+          <div class="titlebar"><div>Wadati Diagram</div><div class="mono" id="wadatiMeta">-</div></div>
+          <canvas id="wadatiCanvas"></canvas>
+        </div>
+        <div style="position:relative">
+          <div id="map"></div>
+          <div id="coordBox">lat=— lon=—</div>
+          <div class="small" style="margin-top:8px">
+            Map shows stations, hypocentral circles (r = Dhyp), chords, and chord-intersection epicenter.
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- HiDPI Canvas ---------- */
+function setupHiDPICanvas(canvas, boxEl, maxDPR=2.5){
+  const dpr = Math.min(window.devicePixelRatio || 1, maxDPR);
+  const rect = boxEl.getBoundingClientRect();
+  const titlebar = boxEl.querySelector(".titlebar");
+  const titleH = titlebar ? titlebar.getBoundingClientRect().height : 0;
+  const cssW = Math.max(10, rect.width);
+  const cssH = Math.max(10, rect.height - titleH);
+  canvas.style.width = cssW + "px";
+  canvas.style.height = cssH + "px";
+  canvas.width = Math.floor(cssW * dpr);
+  canvas.height = Math.floor(cssH * dpr);
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  return {ctx, cssW, cssH, dpr};
+}
+function canvasEventToCssPx(ev, canvas){
+  const r = canvas.getBoundingClientRect();
+  return {x:(ev.clientX-r.left), y:(ev.clientY-r.top), rect:r};
+}
+
+/* ---------- Tick utilities ---------- */
+function niceStep(raw){
+  if(!(raw>0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  const m = raw / p;
+  let n = 1;
+  if(m >= 7.5) n = 10;
+  else if(m >= 3.5) n = 5;
+  else if(m >= 1.5) n = 2;
+  else n = 1;
+  return n * p;
+}
+function ticks(min, max, approxCount){
+  if(!(max>min)) return [min];
+  const span = max - min;
+  const step = niceStep(span / Math.max(2, approxCount));
+  const start = Math.ceil(min / step) * step;
+  const out = [];
+  for(let v = start; v <= max + 1e-12; v += step) out.push(v);
+  return out;
+}
+function fmtTick(v){
+  const av = Math.abs(v);
+  if(av >= 1000) return v.toFixed(0);
+  if(av >= 100) return v.toFixed(1);
+  if(av >= 10) return v.toFixed(2);
+  if(av >= 1) return v.toFixed(3);
+  return v.toFixed(4);
+}
+
+/* ---------- State + DOM ---------- */
+const state = {
+  pyodide:null,
+  stations:{},
+  order:[],
+  picks:{},
+  pickMode:"P",
+  current:null,
+  originEpoch:null,
+  wadati:{xs:[],ys:[],m:NaN,b:NaN,To:NaN,vpvs:NaN},
+  view:{xmin:0,xmax:10,ymin:-1,ymax:1},
+  base:{xmin:0,xmax:10},
+  isDragging:false,
+  dragStart:null,
+  map:null,
+  baseLayers:{},
+  activeBase:null,
+  mapLayers:{stations:null,circles:null,chords:null,epicenter:null}
+};
+
+const els = {
+  pyStatus:document.getElementById("pyStatus"),
+  fileInput:document.getElementById("fileInput"),
+  btnLoad:document.getElementById("btnLoad"),
+  stationList:document.getElementById("stationList"),
+  picksTable:document.getElementById("picksTable"),
+  btnPickP:document.getElementById("btnPickP"),
+  btnPickS:document.getElementById("btnPickS"),
+  pickMode:document.getElementById("pickMode"),
+  btnClearStation:document.getElementById("btnClearStation"),
+  btnClearAll:document.getElementById("btnClearAll"),
+  btnWadati:document.getElementById("btnWadati"),
+  originTime:document.getElementById("originTime"),
+  vpvsOut:document.getElementById("vpvsOut"),
+  vpIn:document.getElementById("vpIn"),
+  vpvsIn:document.getElementById("vpvsIn"),
+  triChecks:document.getElementById("triChecks"),
+  btnSolve:document.getElementById("btnSolve"),
+  basemapSel:document.getElementById("basemapSel"),
+  epiOut:document.getElementById("epiOut"),
+  depthOut:document.getElementById("depthOut"),
+  DhypCheckTable:document.getElementById("DhypCheckTable"),
+  depthTable:document.getElementById("depthTable"),
+  waveBox:document.getElementById("waveBox"),
+  wadatiBox:document.getElementById("wadatiBox"),
+  waveCanvas:document.getElementById("waveCanvas"),
+  wadatiCanvas:document.getElementById("wadatiCanvas"),
+  waveMeta:document.getElementById("waveMeta"),
+  wadatiMeta:document.getElementById("wadatiMeta"),
+  coordBox:document.getElementById("coordBox"),
+};
+
+function hhmmss_msec_utc(epochSec){
+  if (epochSec == null || !Number.isFinite(epochSec)) return "-";
+  const d = new Date(epochSec*1000);
+  const hh=String(d.getUTCHours()).padStart(2,"0");
+  const mm=String(d.getUTCMinutes()).padStart(2,"0");
+  const ss=String(d.getUTCSeconds()).padStart(2,"0");
+  const ms=String(d.getUTCMilliseconds()).padStart(3,"0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
+function hhmmss_utc(epochSec){
+  if (epochSec == null || !Number.isFinite(epochSec)) return "-";
+  const d = new Date(epochSec*1000);
+  const hh=String(d.getUTCHours()).padStart(2,"0");
+  const mm=String(d.getUTCMinutes()).padStart(2,"0");
+  const ss=String(d.getUTCSeconds()).padStart(2,"0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+/* ---------- Validation ---------- */
+function validateTrace(st){
+  const problems=[];
+  if(!st) problems.push("station object is null");
+  if(!Array.isArray(st?.t_rel)) problems.push("t_rel is not an Array");
+  if(!Array.isArray(st?.y)) problems.push("y is not an Array");
+  if(Array.isArray(st?.t_rel) && st.t_rel.length<2) problems.push("t_rel length < 2");
+  if(Array.isArray(st?.y) && st.y.length<2) problems.push("y length < 2");
+  if(Array.isArray(st?.t_rel) && Array.isArray(st?.y) && st.t_rel.length!==st.y.length) problems.push("t_rel/y length mismatch");
+  return problems;
+}
+
+/* ---------- Pyodide SAC Reader ---------- */
+async function initPyodide(){
+  if(state.pyodide) return state.pyodide;
+  els.pyStatus.textContent="Pyodide: loading...";
+  const pyodide = await loadPyodide();
+  await pyodide.loadPackage(["numpy"]);
+  state.pyodide = pyodide;
+
+  const py = `
+import struct, math, datetime
+import numpy as np
+UNDEF_F = -12345.0
+UNDEF_I = -12345
+
+def _read_header(buf, endian):
+    f = struct.unpack(endian + "70f", buf[0:70*4])
+    ioff = 70*4
+    ints = struct.unpack(endian + "40i", buf[ioff:ioff+40*4])
+    coff = ioff + 40*4
+    chars = buf[coff:coff+192]
+    k = []
+    for j in range(24):
+        s = chars[j*8:(j+1)*8].decode("ascii", errors="ignore")
+        k.append(s)
+
+    delta = float(f[0])
+    b = float(f[5])
+    stla = float(f[31])
+    stlo = float(f[32])
+
+    nzyear = int(ints[0]); nzjday = int(ints[1]); nzhour = int(ints[2]); nzmin = int(ints[3]); nzsec = int(ints[4]); nzmsec = int(ints[5])
+    nvhdr = int(ints[6])
+    npts = int(ints[9])
+
+    kstnm = k[0].strip()
+
+    ref_epoch = 0.0
+    if nzyear != UNDEF_I and nzjday != UNDEF_I and nzhour != UNDEF_I:
+        try:
+            jan1 = datetime.datetime(nzyear,1,1,tzinfo=datetime.timezone.utc)
+            ref = jan1 + datetime.timedelta(days=int(nzjday)-1, hours=int(nzhour), minutes=int(nzmin), seconds=int(nzsec), milliseconds=int(nzmsec))
+            ref_epoch = ref.timestamp()
+        except Exception:
+            ref_epoch = 0.0
+
+    start_epoch = ref_epoch + (0.0 if b == UNDEF_F else b)
+    return dict(delta=delta, stla=stla, stlo=stlo, nvhdr=nvhdr, npts=npts, kstnm=kstnm, start_epoch=start_epoch)
+
+def read_sac_bytes(u8):
+    buf = bytes(u8)
+    if len(buf) < 632:
+        raise ValueError("File too small for SAC header (need >= 632 bytes)")
+    header_bytes = buf[:632]
+
+    best = None
+    for endian in ("<", ">"):
+        h = _read_header(header_bytes, endian)
+        if 1 <= h["nvhdr"] <= 20 and 2 <= h["npts"] <= 10_000_000 and math.isfinite(h["delta"]) and h["delta"] > 0 and h["delta"] != UNDEF_F:
+            best = (endian, h)
+            break
+    if best is None:
+        h = _read_header(header_bytes, "<")
+        raise ValueError(f"Could not parse SAC header: DELTA={h['delta']}, NPTS={h['npts']}, NVHDR={h['nvhdr']}")
+
+    endian, h = best
+    delta = float(h["delta"])
+    npts = int(h["npts"])
+    data_off = 632
+    need = data_off + 4*npts
+    if len(buf) < need:
+        raise ValueError(f"File truncated: need {need} bytes for {npts} points")
+
+    data = np.frombuffer(buf, dtype=(np.dtype(endian + "f4")), count=npts, offset=data_off).astype(np.float64)
+    amp = float(np.nanmax(np.abs(data))) if data.size else 0.0
+    y = (data/amp) if amp > 0 else data
+    t_rel = np.arange(npts, dtype=np.float64) * delta
+
+    return dict(
+        station=h["kstnm"] if h["kstnm"] else "UNK",
+        lat=float(h["stla"]),
+        lon=float(h["stlo"]),
+        delta=float(delta),
+        npts=int(npts),
+        start_epoch=float(h["start_epoch"]),
+        t_rel=t_rel.tolist(),
+        y=y.tolist(),
+    )
+`;
+  pyodide.runPython(py);
+  els.pyStatus.textContent="Pyodide: ready";
+  return pyodide;
+}
+
+/* ---------- Map ---------- */
+function initMapIfNeeded(){
+  if(state.map) return;
+  state.map = L.map("map").setView([24.0,45.0],5);
+
+  const esri = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    {maxZoom:19, attribution:"Esri, Maxar, Earthstar Geographics"});
+  const otm = L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+    {maxZoom:17, attribution:"OpenTopoMap (CC-BY-SA)"});
+
+  state.baseLayers={imagery:esri, topo:otm};
+  state.activeBase=esri.addTo(state.map);
+
+  state.mapLayers.stations=L.layerGroup().addTo(state.map);
+  state.mapLayers.circles=L.layerGroup().addTo(state.map);
+  state.mapLayers.chords=L.layerGroup().addTo(state.map);
+  state.mapLayers.epicenter=L.layerGroup().addTo(state.map);
+
+  L.control.scale({imperial:false, metric:true, position:"bottomleft"}).addTo(state.map);
+
+  state.map.on("mousemove", (e)=>{
+    els.coordBox.textContent = `lat=${e.latlng.lat.toFixed(5)} lon=${e.latlng.lng.toFixed(5)}`;
+  });
+
+  els.basemapSel.addEventListener("change", ()=>{
+    const v=els.basemapSel.value;
+    if(state.activeBase) state.map.removeLayer(state.activeBase);
+    state.activeBase=state.baseLayers[v].addTo(state.map);
+  });
+}
+
+function updateMapStations(){
+  initMapIfNeeded();
+  state.mapLayers.stations.clearLayers();
+  const latlngs=[];
+  for(const code of state.order){
+    const s=state.stations[code];
+    if(!Number.isFinite(s.lat)||!Number.isFinite(s.lon)) continue;
+    latlngs.push([s.lat,s.lon]);
+    const hasPS = Number.isFinite(state.picks?.[code]?.p_rel) && Number.isFinite(state.picks?.[code]?.s_rel);
+    const icon=L.divIcon({className:"", html:`<div style="width:10px;height:10px;border-radius:50%;
+      background:${hasPS?"#38bdf8":"rgba(229,231,235,.65)"};
+      border:2px solid rgba(0,0,0,.55);box-shadow:0 0 0 2px rgba(255,255,255,.12);"></div>`,
+      iconSize:[14,14], iconAnchor:[7,7]});
+    L.marker([s.lat,s.lon],{icon}).addTo(state.mapLayers.stations).bindPopup(`<b>${code}</b><br/>lat=${s.lat.toFixed(4)} lon=${s.lon.toFixed(4)}`);
+  }
+  if(latlngs.length) state.map.fitBounds(L.latLngBounds(latlngs).pad(0.2));
+}
+
+function clearSolveLayers(){
+  initMapIfNeeded();
+  state.mapLayers.circles.clearLayers();
+  state.mapLayers.chords.clearLayers();
+  state.mapLayers.epicenter.clearLayers();
+}
+
+/* ---------- UI ---------- */
+function setPickMode(m){ state.pickMode=m; els.pickMode.textContent=m; }
+function renderStationList(){
+  els.stationList.innerHTML="";
+  state.order.forEach(code=>{
+    const s=state.stations[code];
+    const div=document.createElement("div");
+    div.className="list-item"+(state.current===code?" active":"");
+    div.innerHTML=`<span>${code}</span><span class="tag">${Number.isFinite(s.lat)?s.lat.toFixed(3):"?"}, ${Number.isFinite(s.lon)?s.lon.toFixed(3):"?"}</span>`;
+    div.onclick=()=>{ state.current=code; resetViewToCurrent(); renderStationList(); renderPicks(); drawWave(); };
+    els.stationList.appendChild(div);
+  });
+}
+function renderPicks(){
+  els.picksTable.innerHTML="";
+  state.order.forEach(code=>{
+    const s=state.stations[code], pk=state.picks[code]||{};
+    const pAbs=(Number.isFinite(pk.p_rel)&&Number.isFinite(s.start_epoch))?s.start_epoch+pk.p_rel:NaN;
+    const sAbs=(Number.isFinite(pk.s_rel)&&Number.isFinite(s.start_epoch))?s.start_epoch+pk.s_rel:NaN;
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td class="mono">${code}</td><td class="mono">${Number.isFinite(pAbs)?hhmmss_msec_utc(pAbs):"-"}</td><td class="mono">${Number.isFinite(sAbs)?hhmmss_msec_utc(sAbs):"-"}</td>`;
+    els.picksTable.appendChild(tr);
+  });
+}
+function renderTriChecks(){
+  els.triChecks.innerHTML="";
+  state.order.forEach(code=>{
+    const lab=document.createElement("label");
+    const cb=document.createElement("input");
+    cb.type="checkbox"; cb.dataset.code=code;
+    lab.appendChild(cb); lab.appendChild(document.createTextNode(code));
+    els.triChecks.appendChild(lab);
+  });
+}
+
+/* ---------- Plot area helpers (axes + ticks) ---------- */
+function plotArea(w,h){ return {L:70, R:20, T:24, B:54, w, h, x0:70, y0:24, pw:(w-70-20), ph:(h-24-54)}; }
+function drawAxesWithTicks(ctx, area, xmin, xmax, ymin, ymax, xTitle, yTitle, xTickFormatter, yTickFormatter){
+  const {x0,y0,pw,ph,w,h,B} = area;
+  const x1=x0+pw, y1=y0+ph;
+
+  ctx.fillStyle="rgba(0,0,0,.10)";
+  ctx.fillRect(x0,y0,pw,ph);
+
+  const xt = ticks(xmin, xmax, 7);
+  const yt = ticks(ymin, ymax, 5);
+
+  ctx.strokeStyle="rgba(148,163,184,.12)";
+  ctx.lineWidth=1;
+  for(const xv of xt){
+    const px = x0 + (xv-xmin)/(xmax-xmin)*pw;
+    ctx.beginPath(); ctx.moveTo(px,y0); ctx.lineTo(px,y1); ctx.stroke();
+  }
+  for(const yv of yt){
+    const py = y1 - (yv-ymin)/(ymax-ymin)*ph;
+    ctx.beginPath(); ctx.moveTo(x0,py); ctx.lineTo(x1,py); ctx.stroke();
+  }
+
+  ctx.strokeStyle="rgba(229,231,235,.65)";
+  ctx.lineWidth=1.25;
+  ctx.beginPath();
+  ctx.moveTo(x0,y0); ctx.lineTo(x0,y1);
+  ctx.lineTo(x1,y1);
+  ctx.stroke();
+
+  ctx.fillStyle="rgba(229,231,235,.82)";
+  ctx.font="12px system-ui";
+  ctx.textBaseline="middle";
+
+  for(const yv of yt){
+    const py = y1 - (yv-ymin)/(ymax-ymin)*ph;
+    ctx.beginPath(); ctx.moveTo(x0-6,py); ctx.lineTo(x0,py); ctx.stroke();
+    const s = (yTickFormatter?yTickFormatter(yv):fmtTick(yv));
+    ctx.textAlign="right";
+    ctx.fillText(s, x0-10, py);
+  }
+
+  ctx.textBaseline="top";
+  for(const xv of xt){
+    const px = x0 + (xv-xmin)/(xmax-xmin)*pw;
+    ctx.beginPath(); ctx.moveTo(px,y1); ctx.lineTo(px,y1+6); ctx.stroke();
+    const s = (xTickFormatter?xTickFormatter(xv):fmtTick(xv));
+    ctx.textAlign="center";
+    ctx.fillText(s, px, y1+10);
+  }
+
+  ctx.fillStyle="rgba(229,231,235,.9)";
+  ctx.font="13px system-ui";
+  ctx.textAlign="center";
+  ctx.textBaseline="top";
+  ctx.fillText(xTitle, x0+pw/2, h-B+28);
+
+  ctx.save();
+  ctx.translate(18, y0+ph/2);
+  ctx.rotate(-Math.PI/2);
+  ctx.textAlign="center";
+  ctx.textBaseline="top";
+  ctx.fillText(yTitle, 0, 0);
+  ctx.restore();
+}
+
+/* ---------- Waveform Canvas ---------- */
+let waveCtxInfo=null;
+function getWaveCtx(){ if(!waveCtxInfo) waveCtxInfo=setupHiDPICanvas(els.waveCanvas, document.getElementById("waveBox")); return waveCtxInfo; }
+function getWaveSize(){ const i=getWaveCtx(); return {w:i.cssW,h:i.cssH}; }
+function getCurrent(){ return state.current?state.stations[state.current]:null; }
+
+function resetViewToCurrent(){
+  const cur=getCurrent();
+  if(!cur||!Array.isArray(cur.t_rel)||cur.t_rel.length<2) return;
+  state.base.xmin=0; state.base.xmax=cur.t_rel[cur.t_rel.length-1];
+  state.view.xmin=0; state.view.xmax=Math.min(10,state.base.xmax);
+  if(!(state.view.xmax>state.view.xmin)) state.view.xmax=state.view.xmin+1;
+  autoscaleY();
+}
+function autoscaleY(){
+  const cur=getCurrent(); if(!cur) return;
+  const {xmin,xmax}=state.view;
+  const T=cur.t_rel, Y=cur.y;
+  let ymin=Infinity,ymax=-Infinity;
+  for(let i=0;i<T.length;i++){
+    if(T[i]<xmin||T[i]>xmax) continue;
+    const v=Y[i]; if(!Number.isFinite(v)) continue;
+    if(v<ymin) ymin=v; if(v>ymax) ymax=v;
+  }
+  if(!Number.isFinite(ymin)||!Number.isFinite(ymax)){ ymin=-1; ymax=1; }
+  let span=ymax-ymin; if(span<=0) span=Math.max(Math.abs(ymax),1e-6);
+  const pad=0.08*span;
+  state.view.ymin=ymin-pad; state.view.ymax=ymax+pad;
+}
+function xToPx(x, area){ const {xmin,xmax}=state.view; return area.x0 + (x-xmin)/(xmax-xmin)*area.pw; }
+function yToPx(y, area){ const {ymin,ymax}=state.view; return (area.y0+area.ph) - (y-ymin)/(ymax-ymin)*area.ph; }
+function pxToX(px, area){ const {xmin,xmax}=state.view; return xmin + ((px-area.x0)/area.pw)*(xmax-xmin); }
+
+function drawWave(){
+  const ctx=getWaveCtx().ctx;
+  const {w,h}=getWaveSize();
+  ctx.clearRect(0,0,w,h);
+
+  const cur=getCurrent();
+  if(!cur){
+    ctx.fillStyle="rgba(229,231,235,.7)"; ctx.font="14px sans-serif";
+    ctx.fillText("No station selected.",20,30);
+    els.waveMeta.textContent="-";
+    return;
+  }
+  const issues=validateTrace(cur);
+  if(issues.length){
+    ctx.fillStyle="rgba(229,231,235,.85)"; ctx.font="14px sans-serif";
+    ctx.fillText("Waveform not drawable.",20,30);
+    els.waveMeta.textContent="invalid trace";
+    return;
+  }
+
+  const area=plotArea(w,h);
+  drawAxesWithTicks(ctx, area, state.view.xmin, state.view.xmax, state.view.ymin, state.view.ymax,
+    "Time since trace start (s)", "Normalized amplitude", (v)=>fmtTick(v), (v)=>fmtTick(v)
+  );
+
+  const T=cur.t_rel, Y=cur.y;
+  const xmin=state.view.xmin, xmax=state.view.xmax;
+
+  let i0=0; while(i0<T.length&&T[i0]<xmin) i0++;
+  let i1=i0; while(i1<T.length&&T[i1]<=xmax) i1++; i1=Math.min(T.length-1,i1);
+  const step=Math.max(1,Math.floor((i1-i0)/7000));
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(area.x0,area.y0,area.pw,area.ph); ctx.clip();
+  ctx.strokeStyle="rgba(229,231,235,.92)";
+  ctx.lineWidth=1;
+  ctx.beginPath(); let started=false;
+  for(let i=i0;i<=i1;i+=step){
+    const xx=xToPx(T[i],area), yy=yToPx(Y[i],area);
+    if(!started){ ctx.moveTo(xx,yy); started=true; } else ctx.lineTo(xx,yy);
+  }
+  ctx.stroke();
+
+  const pk=state.picks[state.current]||{};
+  if(Number.isFinite(pk.p_rel)){
+    const xx=xToPx(pk.p_rel,area);
+    ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--red');
+    ctx.setLineDash([6,4]); ctx.beginPath(); ctx.moveTo(xx,area.y0); ctx.lineTo(xx,area.y0+area.ph); ctx.stroke(); ctx.setLineDash([]);
+  }
+  if(Number.isFinite(pk.s_rel)){
+    const xx=xToPx(pk.s_rel,area);
+    ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--green');
+    ctx.setLineDash([6,4]); ctx.beginPath(); ctx.moveTo(xx,area.y0); ctx.lineTo(xx,area.y0+area.ph); ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.restore();
+
+  ctx.font="12px system-ui";
+  if(Number.isFinite(pk.p_rel)){
+    const xx=xToPx(pk.p_rel,area);
+    ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--red');
+    ctx.fillText("P", xx+4, area.y0+14);
+  }
+  if(Number.isFinite(pk.s_rel)){
+    const xx=xToPx(pk.s_rel,area);
+    ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--green');
+    ctx.fillText("S", xx+4, area.y0+28);
+  }
+
+  els.waveMeta.textContent = `${cur.code} | Δ=${cur.delta.toFixed(6)}s | npts=${cur.npts} | start=${hhmmss_msec_utc(cur.start_epoch)}`;
+}
+
+/* waveform interactions */
+els.waveCanvas.addEventListener("dblclick",()=>{
+  const cur=getCurrent(); if(!cur) return;
+  state.view.xmin=state.base.xmin;
+  state.view.xmax=Math.min(state.base.xmax, state.base.xmin+10);
+  autoscaleY(); drawWave();
+});
+els.waveCanvas.addEventListener("wheel",(ev)=>{
+  ev.preventDefault();
+  const cur=getCurrent(); if(!cur) return;
+  const {w,h}=getWaveSize();
+  const area=plotArea(w,h);
+  const p=canvasEventToCssPx(ev, els.waveCanvas);
+  const x=pxToX(p.x, area);
+
+  const zoomBase=1.2;
+  const scale=(ev.deltaY<0)?(1/zoomBase):zoomBase;
+  let xmin=state.view.xmin, xmax=state.view.xmax;
+  const span=xmax-xmin;
+  const newSpan=Math.max(0.02, span*scale);
+  const frac=(x-xmin)/span;
+  xmin=x-frac*newSpan; xmax=xmin+newSpan;
+  xmin=Math.max(state.base.xmin,xmin);
+  xmax=Math.min(state.base.xmax,xmax);
+  if(xmax-xmin<0.02) xmax=xmin+0.02;
+  state.view.xmin=xmin; state.view.xmax=xmax;
+  autoscaleY(); drawWave();
+},{passive:false});
+els.waveCanvas.addEventListener("mousedown",(ev)=>{
+  const cur=getCurrent(); if(!cur) return;
+  const {w,h}=getWaveSize();
+  const area=plotArea(w,h);
+  const p=canvasEventToCssPx(ev, els.waveCanvas);
+  if(p.x<area.x0||p.x>area.x0+area.pw||p.y<area.y0||p.y>area.y0+area.ph) return;
+  state.isDragging=true;
+  state.dragStart={px:p.x,xmin:state.view.xmin,xmax:state.view.xmax, area};
+});
+window.addEventListener("mouseup",()=>{ state.isDragging=false; state.dragStart=null; });
+window.addEventListener("mousemove",(ev)=>{
+  if(!state.isDragging||!state.dragStart) return;
+  const cur=getCurrent(); if(!cur) return;
+  const r=els.waveCanvas.getBoundingClientRect();
+  const px=ev.clientX-r.left;
+  const dxPx=px-state.dragStart.px;
+
+  const area=state.dragStart.area;
+  const span=state.dragStart.xmax-state.dragStart.xmin;
+  const dx=(dxPx/area.pw)*span;
+
+  let xmin=state.dragStart.xmin-dx;
+  let xmax=state.dragStart.xmax-dx;
+  const ww=xmax-xmin;
+  if(xmin<state.base.xmin){ xmin=state.base.xmin; xmax=xmin+ww; }
+  if(xmax>state.base.xmax){ xmax=state.base.xmax; xmin=xmax-ww; }
+  state.view.xmin=xmin; state.view.xmax=xmax;
+  autoscaleY(); drawWave();
+});
+els.waveCanvas.addEventListener("click",(ev)=>{
+  const cur=getCurrent(); if(!cur) return;
+  const {w,h}=getWaveSize();
+  const area=plotArea(w,h);
+  const p=canvasEventToCssPx(ev, els.waveCanvas);
+  if(p.x<area.x0||p.x>area.x0+area.pw||p.y<area.y0||p.y>area.y0+area.ph) return;
+
+  const x=pxToX(p.x, area);
+  const code=state.current;
+  if(!state.picks[code]) state.picks[code]={};
+  if(state.pickMode==="P") state.picks[code].p_rel=x; else state.picks[code].s_rel=x;
+  renderPicks(); updateMapStations(); drawWave();
+});
+
+/* ---------- Wadati plot ---------- */
+let wadatiCtxInfo=null;
+function getWadatiCtx(){ if(!wadatiCtxInfo) wadatiCtxInfo=setupHiDPICanvas(els.wadatiCanvas, document.getElementById("wadatiBox")); return wadatiCtxInfo; }
+function getWadatiSize(){ const i=getWadatiCtx(); return {w:i.cssW,h:i.cssH}; }
+
+function drawWadati(){
+  const ctx=getWadatiCtx().ctx;
+  const {w,h}=getWadatiSize();
+  ctx.clearRect(0,0,w,h);
+
+  const xs=state.wadati.xs||[], ys=state.wadati.ys||[];
+  const area=plotArea(w,h);
+
+  if(xs.length<2){
+    drawAxesWithTicks(ctx, area, 0, 10, 0, 10, "P arrival time (UTC)", "S − P (s)", (v)=>fmtTick(v), (v)=>fmtTick(v));
+    ctx.fillStyle="rgba(229,231,235,.75)"; ctx.font="12px system-ui";
+    ctx.fillText("Need ≥ 2 stations with P & S picks.", area.x0+10, area.y0+10);
+    els.wadatiMeta.textContent="-";
+    return;
+  }
+
+  let xmin=Math.min(...xs), xmax=Math.max(...xs);
+  let ymin=Math.min(...ys), ymax=Math.max(...ys);
+  const xpad=(xmax-xmin||1)*0.08, ypad=(ymax-ymin||1)*0.10;
+  xmin-=xpad; xmax+=xpad; ymin=Math.max(0,ymin-ypad); ymax+=ypad;
+
+  drawAxesWithTicks(ctx, area, xmin, xmax, ymin, ymax, "P arrival time (UTC)", "S − P (s)", (v)=>hhmmss_utc(v), (v)=>fmtTick(v));
+
+  function xToPx(v){ return area.x0 + (v-xmin)/(xmax-xmin)*area.pw; }
+  function yToPx(v){ return (area.y0+area.ph) - (v-ymin)/(ymax-ymin)*area.ph; }
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(area.x0,area.y0,area.pw,area.ph); ctx.clip();
+
+  ctx.fillStyle="rgba(56,189,248,.95)";
+  for(let i=0;i<xs.length;i++){
+    const px=xToPx(xs[i]), py=yToPx(ys[i]);
+    ctx.beginPath(); ctx.arc(px,py,3.6,0,Math.PI*2); ctx.fill();
+  }
+
+  if(Number.isFinite(state.wadati.m)&&Number.isFinite(state.wadati.b)){
+    const m=state.wadati.m, b=state.wadati.b;
+    const x1=xmin,x2=xmax, y1=m*x1+b, y2=m*x2+b;
+    ctx.strokeStyle="rgba(245,158,11,.9)"; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(xToPx(x1),yToPx(y1)); ctx.lineTo(xToPx(x2),yToPx(y2)); ctx.stroke();
+    els.wadatiMeta.textContent=`m=${m.toFixed(5)}  Vp/Vs=${(m+1).toFixed(4)}  To=${hhmmss_msec_utc(state.wadati.To)}`;
+  } else {
+    els.wadatiMeta.textContent="fit unavailable";
+  }
+
+  ctx.restore();
+}
+
+function computeWadati(){
+  const xs=[],ys=[];
+  for(const code of state.order){
+    const s=state.stations[code], pk=state.picks[code]||{};
+    if(!Number.isFinite(pk.p_rel)||!Number.isFinite(pk.s_rel)) continue;
+    if(!Number.isFinite(s.start_epoch)) continue;
+    const TpAbs=s.start_epoch+pk.p_rel;
+    const TsAbs=s.start_epoch+pk.s_rel;
+    xs.push(TpAbs);
+    ys.push(TsAbs-TpAbs);
+  }
+  state.wadati={xs,ys,m:NaN,b:NaN,To:NaN,vpvs:NaN};
+  if(xs.length<2){ alert("Need P & S picks at ≥ 2 stations."); drawWadati(); return; }
+
+  const n=xs.length;
+  const xm=xs.reduce((a,b)=>a+b,0)/n;
+  const ym=ys.reduce((a,b)=>a+b,0)/n;
+  let sxx=0,sxy=0;
+  for(let i=0;i<n;i++){ sxx+=(xs[i]-xm)*(xs[i]-xm); sxy+=(xs[i]-xm)*(ys[i]-ym); }
+  if(sxx===0){ alert("Wadati fit failed (zero variance in Tp)."); drawWadati(); return; }
+
+  const m=sxy/sxx;
+  const b=ym-m*xm;
+  const To=-b/m;
+  const vpvs=m+1;
+
+  state.originEpoch=To;
+  state.wadati={xs,ys,m,b,To,vpvs};
+  els.originTime.textContent=hhmmss_msec_utc(To);
+  els.vpvsOut.textContent=vpvs.toFixed(4);
+  els.vpvsIn.value=vpvs.toFixed(4);
+  drawWadati();
+}
+
+/* ---------- Geometry (local plane) + Geodesic distance ---------- */
+const R_EARTH=6371.0;
+function equirect_xy(lat,lon,lat0,lon0){
+  const latr=lat*Math.PI/180, lonr=lon*Math.PI/180;
+  const lat0r=lat0*Math.PI/180, lon0r=lon0*Math.PI/180;
+  const x=(lonr-lon0r)*Math.cos(lat0r)*R_EARTH;
+  const y=(latr-lat0r)*R_EARTH;
+  return {x,y};
+}
+function xy_to_latlon(x,y,lat0,lon0){
+  const lat0r=lat0*Math.PI/180;
+  const dlat=y/R_EARTH;
+  const dlon=x/(R_EARTH*Math.cos(lat0r));
+  return {lat:lat0+dlat*180/Math.PI, lon:lon0+dlon*180/Math.PI};
+}
+function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx+dy*dy); }
+
+function haversine_km(lat1, lon1, lat2, lon2){
+  const R=6371.0;
+  const toRad=d=>d*Math.PI/180;
+  const dLat=toRad(lat2-lat1);
+  const dLon=toRad(lon2-lon1);
+  const a=Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  const c=2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+  return R*c;
+}
+
+/* intersections => chord endpoints */
+function circleCircleIntersections(c1,r1,c2,r2){
+  const d = dist(c1,c2);
+  if(d === 0) return {ok:false, msg:"same center"};
+  if(d > r1 + r2) return {ok:false, msg:"no overlap (separate)"};
+  if(d < Math.abs(r1 - r2)) return {ok:false, msg:"one inside another (no chord)"};
+
+  const a = (r1*r1 - r2*r2 + d*d) / (2*d);
+  const h2 = r1*r1 - a*a;
+  if(h2 < -1e-9) return {ok:false, msg:"numeric h^2<0"};
+  const h = Math.sqrt(Math.max(0,h2));
+
+  const x0=c1.x, y0=c1.y, x1=c2.x, y1=c2.y;
+  const ex = (x1-x0)/d, ey=(y1-y0)/d;
+
+  const px = x0 + a*ex;
+  const py = y0 + a*ey;
+
+  const rx = -ey, ry = ex;
+  const pA = {x: px + h*rx, y: py + h*ry};
+  const pB = {x: px - h*rx, y: py - h*ry};
+  return {ok:true, p1:pA, p2:pB};
+}
+function lineIntersection(p1,p2,p3,p4){
+  const x1=p1.x, y1=p1.y, x2=p2.x, y2=p2.y;
+  const x3=p3.x, y3=p3.y, x4=p4.x, y4=p4.y;
+  const den = (x1-x2)*(y3-y4) - (y1-y2)*(x3-x4);
+  if(Math.abs(den) < 1e-12) return {ok:false, msg:"parallel chords"};
+  const px = ((x1*y2 - y1*x2)*(x3-x4) - (x1-x2)*(x3*y4 - y3*x4)) / den;
+  const py = ((x1*y2 - y1*x2)*(y3-y4) - (y1-y2)*(x3*y4 - y3*x4)) / den;
+  return {ok:true, p:{x:px,y:py}};
+}
+
+/* Hypocentral distance */
+function Dhyp_from_formula(dt, Vp, Vs){ return dt * (Vp*Vs) / (Vp - Vs); }
+function Dhyp_from_slowness(dt, Vp, Vs){ return dt / ((1/Vs) - (1/Vp)); }
+
+/* robust depth */
+function robustDepthKm(Dhyp, Depi){
+  const hi=[];
+  for(let i=0;i<Dhyp.length;i++){
+    const v = Dhyp[i]*Dhyp[i] - Depi[i]*Depi[i];
+    if(v <= 0) continue;
+    hi.push(Math.sqrt(v));
+  }
+  if(hi.length===0) return {ok:false, hi:[], med:NaN, robustStd:NaN};
+
+  const sorted=[...hi].sort((a,b)=>a-b);
+  const med = sorted[Math.floor(sorted.length/2)];
+  const absdev = sorted.map(x=>Math.abs(x-med)).sort((a,b)=>a-b);
+  const mad = absdev[Math.floor(absdev.length/2)];
+  const robustStd = 1.4826 * mad;
+  return {ok:true, hi, med, robustStd};
+}
+
+/* map drawing */
+function drawHypoCircles(codes, Dhyp){
+  for(let i=0;i<3;i++){
+    const code=codes[i];
+    const s=state.stations[code];
+    const color=["#ef4444","#22c55e","#38bdf8"][i%3];
+    L.circle([s.lat,s.lon],{
+      radius: Dhyp[i]*1000,  // ✅ Dhyp (km) → meters
+      color, weight:2, opacity:0.95, fillOpacity:0.06
+    }).addTo(state.mapLayers.circles)
+      .bindPopup(`<b>${code}</b><br/>Dhyp=${Dhyp[i].toFixed(2)} km`);
+  }
+}
+function drawChord(pA, pB, lat0, lon0, color){
+  const llA = xy_to_latlon(pA.x, pA.y, lat0, lon0);
+  const llB = xy_to_latlon(pB.x, pB.y, lat0, lon0);
+  L.polyline([[llA.lat,llA.lon],[llB.lat,llB.lon]], {color, weight:3, opacity:0.95})
+    .addTo(state.mapLayers.chords);
+}
+function drawEpicenter(epi, lat0, lon0){
+  const epiLL=xy_to_latlon(epi.x, epi.y, lat0, lon0);
+  const icon=L.divIcon({className:"", html:`<div style="width:14px;height:14px;border-radius:50%;background:#f59e0b;border:2px solid rgba(0,0,0,.55);box-shadow:0 0 0 2px rgba(255,255,255,.15);"></div>`, iconSize:[18,18], iconAnchor:[9,9]});
+  L.marker([epiLL.lat, epiLL.lon],{icon}).addTo(state.mapLayers.epicenter)
+    .bindPopup(`<b>Epicenter</b><br/>lat=${epiLL.lat.toFixed(4)} lon=${epiLL.lon.toFixed(4)}`);
+  return epiLL;
+}
+
+/* ---------- Solve ---------- */
+function solveByChordIntersection(){
+  const checked=[...els.triChecks.querySelectorAll("input[type=checkbox]:checked")].map(cb=>cb.dataset.code);
+  if(checked.length!==3){ alert("Select exactly 3 stations."); return; }
+
+  const Vp=Number(els.vpIn.value);
+  const vpvs=Number(els.vpvsIn.value);
+  if(!(Vp>0) || !(vpvs>1)){ alert("Set valid Vp and Vp/Vs."); return; }
+  const Vs = Vp / vpvs;
+  if(!(Vs>0) || !(Vp>Vs)){ alert("Invalid velocities: must have Vp > Vs > 0."); return; }
+
+  els.DhypCheckTable.innerHTML="";
+  els.depthTable.innerHTML="";
+  clearSolveLayers();
+
+  const Dhyp=[]; const lats=[]; const lons=[];
+  let warn=false;
+  const REL_TOL=1e-9, ABS_TOL=1e-9;
+
+  for(const code of checked){
+    const s=state.stations[code];
+    const pk=state.picks[code]||{};
+    if(!Number.isFinite(s.lat)||!Number.isFinite(s.lon)){ alert(`Station ${code} missing STLA/STLO`); return; }
+    if(!Number.isFinite(pk.p_rel)||!Number.isFinite(pk.s_rel)){ alert(`Station ${code} needs P & S picks`); return; }
+    const dt = pk.s_rel - pk.p_rel;
+    if(!(dt>0)){ alert(`Station ${code}: Ts must be after Tp (dt>0).`); return; }
+
+    const Df = Dhyp_from_formula(dt, Vp, Vs);
+    const Ds = Dhyp_from_slowness(dt, Vp, Vs);
+    const absDiff = Math.abs(Df - Ds);
+    const relDiff = absDiff / Math.max(1e-12, Math.abs(Df));
+    if(absDiff>ABS_TOL && relDiff>REL_TOL) warn=true;
+
+    Dhyp.push(Df);
+    lats.push(s.lat); lons.push(s.lon);
+
+    const tr=document.createElement("tr");
+    tr.innerHTML = `
+      <td class="mono">${code}</td>
+      <td class="mono">${dt.toFixed(3)}</td>
+      <td class="mono">${Df.toFixed(6)}</td>
+      <td class="mono">${Ds.toFixed(6)}</td>
+      <td class="mono">${absDiff.toExponential(3)}</td>
+      <td class="mono">${relDiff.toExponential(3)}</td>
+    `;
+    els.DhypCheckTable.appendChild(tr);
+  }
+  if(warn) alert("WARNING: Dhyp validation mismatch detected. Check Vp/Vs and picks.");
+
+  const lat0=(lats[0]+lats[1]+lats[2])/3;
+  const lon0=(lons[0]+lons[1]+lons[2])/3;
+
+  const C = [
+    equirect_xy(lats[0],lons[0],lat0,lon0),
+    equirect_xy(lats[1],lons[1],lat0,lon0),
+    equirect_xy(lats[2],lons[2],lat0,lon0),
+  ];
+
+  drawHypoCircles(checked, Dhyp);
+
+  const pairs = [
+    {i:0,j:1,color:"#f59e0b"},
+    {i:0,j:2,color:"#a78bfa"},
+    {i:1,j:2,color:"#60a5fa"},
+  ];
+  const chords=[];
+  for(const pr of pairs){
+    const inter = circleCircleIntersections(C[pr.i], Dhyp[pr.i], C[pr.j], Dhyp[pr.j]);
+    if(!inter.ok){
+      alert(`Circles ${checked[pr.i]} & ${checked[pr.j]}: ${inter.msg}. Cannot form chord.`);
+      return;
+    }
+    chords.push({p1:inter.p1, p2:inter.p2});
+    drawChord(inter.p1, inter.p2, lat0, lon0, pr.color);
+  }
+
+  let epiRes = lineIntersection(chords[0].p1, chords[0].p2, chords[1].p1, chords[1].p2);
+  if(!epiRes.ok){
+    epiRes = lineIntersection(chords[0].p1, chords[0].p2, chords[2].p1, chords[2].p2);
+    if(!epiRes.ok){
+      alert("Chord intersection failed (parallel/degenerate).");
+      return;
+    }
+  }
+
+  const epi = epiRes.p;
+  const epiLL = drawEpicenter(epi, lat0, lon0);
+
+  // ✅ epicentral distance as geodesic (more precise)
+  const Depi = [];
+  for(let i=0;i<3;i++){
+    const st = state.stations[checked[i]];
+    Depi.push(haversine_km(epiLL.lat, epiLL.lon, st.lat, st.lon));
+  }
+
+  const depthRes = robustDepthKm(Dhyp, Depi);
+  if(!depthRes.ok){
+    alert("Depth could not be computed: Dhyp < Depi for all stations (check picks/velocities).");
+    return;
+  }
+
+  els.epiOut.textContent = `lat=${epiLL.lat.toFixed(4)}, lon=${epiLL.lon.toFixed(4)}`;
+  els.depthOut.textContent = `${depthRes.med.toFixed(2)} ± ${depthRes.robustStd.toFixed(2)} km`;
+
+  for(let i=0;i<3;i++){
+    const v = Dhyp[i]*Dhyp[i] - Depi[i]*Depi[i];
+    const hi = v>0 ? Math.sqrt(v) : NaN;
+    const tr=document.createElement("tr");
+    tr.innerHTML = `
+      <td class="mono">${checked[i]}</td>
+      <td class="mono">${Dhyp[i].toFixed(3)}</td>
+      <td class="mono">${Depi[i].toFixed(3)}</td>
+      <td class="mono">${Number.isFinite(hi)?hi.toFixed(3):"NaN"}</td>
+    `;
+    els.depthTable.appendChild(tr);
+  }
+
+  const boundsPts = [
+    [lats[0],lons[0]],[lats[1],lons[1]],[lats[2],lons[2]],[epiLL.lat, epiLL.lon]
+  ];
+  state.map.fitBounds(L.latLngBounds(boundsPts).pad(0.25));
+}
+
+/* ---------- Buttons ---------- */
+els.btnPickP.onclick=()=>setPickMode("P");
+els.btnPickS.onclick=()=>setPickMode("S");
+els.btnWadati.onclick=()=>computeWadati();
+els.btnSolve.onclick=()=>solveByChordIntersection();
+
+els.btnClearStation.onclick=()=>{
+  if(!state.current) return;
+  state.picks[state.current]={p_rel:NaN,s_rel:NaN};
+  renderPicks(); updateMapStations(); drawWave();
+};
+els.btnClearAll.onclick=()=>{
+  for(const code of state.order) state.picks[code]={p_rel:NaN,s_rel:NaN};
+  state.originEpoch=null;
+  state.wadati={xs:[],ys:[],m:NaN,b:NaN,To:NaN,vpvs:NaN};
+  els.originTime.textContent="-";
+  els.vpvsOut.textContent="-";
+  els.epiOut.textContent="-";
+  els.depthOut.textContent="-";
+  els.DhypCheckTable.innerHTML="";
+  els.depthTable.innerHTML="";
+  renderPicks(); drawWave(); drawWadati();
+  updateMapStations();
+  clearSolveLayers();
+};
+
+/* ---------- Load SAC files ---------- */
+async function loadSACFiles(files){
+  const pyodide = await initPyodide();
+  const read_sac_bytes = pyodide.globals.get("read_sac_bytes");
+
+  state.stations={}; state.order=[]; state.picks={};
+  state.current=null;
+  state.originEpoch=null;
+  state.wadati={xs:[],ys:[],m:NaN,b:NaN,To:NaN,vpvs:NaN};
+
+  els.originTime.textContent="-";
+  els.vpvsOut.textContent="-";
+  els.epiOut.textContent="-";
+  els.depthOut.textContent="-";
+  els.DhypCheckTable.innerHTML="";
+  els.depthTable.innerHTML="";
+  clearSolveLayers();
+
+  function pyGetNumber(d,key){ const v=d.get(key); const out=Number(v); if(v&&typeof v.destroy==="function") v.destroy(); return out; }
+  function pyGetString(d,key){ const v=d.get(key); const out=(v==null)?"":String(v); if(v&&typeof v.destroy==="function") v.destroy(); return out; }
+  function pyGetArray(d,key){ const v=d.get(key); const out=(v==null)?null:v.toJs(); if(v&&typeof v.destroy==="function") v.destroy(); return out; }
+
+  for(const f of files){
+    const u8 = new Uint8Array(await f.arrayBuffer());
+    try{
+      const pyRes = read_sac_bytes(u8);
+      const stationRaw = pyGetString(pyRes,"station").trim();
+      const lat = pyGetNumber(pyRes,"lat");
+      const lon = pyGetNumber(pyRes,"lon");
+      const delta = pyGetNumber(pyRes,"delta");
+      const npts = pyGetNumber(pyRes,"npts");
+      const start_epoch = pyGetNumber(pyRes,"start_epoch");
+      const t_rel = pyGetArray(pyRes,"t_rel");
+      const y = pyGetArray(pyRes,"y");
+      if(pyRes && typeof pyRes.destroy==="function") pyRes.destroy();
+
+      let code = stationRaw ? stationRaw : (f.name || "UNK");
+      if(state.stations[code]) code = `${code}_${f.name}`;
+
+      const st = {code, lat, lon, delta, npts, start_epoch, t_rel, y};
+      state.stations[code]=st;
+      state.order.push(code);
+      state.picks[code]={p_rel:NaN, s_rel:NaN};
+    } catch(e){
+      console.error(e);
+      alert(`Failed to read ${f.name}: ${e}`);
+    }
+  }
+
+  if(state.order.length){
+    state.current=state.order[0];
+    resetViewToCurrent();
+  }
+
+  renderStationList();
+  renderPicks();
+  renderTriChecks();
+
+  waveCtxInfo=null; wadatiCtxInfo=null;
+  drawWave();
+  drawWadati();
+  initMapIfNeeded();
+  updateMapStations();
+}
+
+els.btnLoad.onclick=async ()=>{
+  const files=els.fileInput.files;
+  if(!files||!files.length) return alert("Select SAC files first.");
+  await loadSACFiles(files);
+};
+
+/* ---------- init / resize ---------- */
+function handleResize(){
+  waveCtxInfo=null; wadatiCtxInfo=null;
+  drawWave(); drawWadati();
+  if(state.map) state.map.invalidateSize(true);
+}
+window.addEventListener("resize", handleResize);
+
+/* ---------- start ---------- */
+drawWave();
+drawWadati();
+initMapIfNeeded();
+updateMapStations();
+</script>
+</body>
+</html>
+
