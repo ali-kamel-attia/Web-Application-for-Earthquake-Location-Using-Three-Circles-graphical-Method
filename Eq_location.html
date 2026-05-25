@@ -73,10 +73,16 @@
 <body>
 <header>
   <div class="wrap">
-    <h1>Hypocentral circles (r = Dhyp) → pairwise chords → epicenter → depth (geodesic)</h1>
+    <h1>Three-circle bisection + N-station joint LS hypocenter inversion</h1>
     <div class="sub">
-      Depth improved by using geodesic epicentral distance (Haversine) and robust aggregation (median ± MAD-derived σ).
-      Circles remain drawn with <span class="mono">radius = Dhyp (km) × 1000</span> meters.
+      <b>Chord method (3 stations):</b> Vp derived as apparent velocity from Wadati To and chord geometry, iterated
+      to the fixed point <span class="mono">Vp = median(Dhyp_geom_i / (Tp_i − To))</span>.
+      Epicenter = LS intersection of 3 chord lines; depth from <span class="mono">h = √(Dhyp² − Depi²)</span>.
+      Uncertainties via Monte Carlo over σ(pick), σ(Vp), σ(Vp/Vs).
+      <br/>
+      <b>Joint LS (N ≥ 3 stations):</b> Levenberg–Marquardt on the full arrival-time likelihood with unknowns
+      <span class="mono">(x, y, h, To, Vp)</span> and Vp/Vs fixed from Wadati. Uncertainties from the asymptotic
+      covariance <span class="mono">σ²·(JᵀJ)⁻¹</span>; depth becomes well-resolved once N ≥ 5.
     </div>
   </div>
 </header>
@@ -128,6 +134,9 @@
       </div>
 
       <div class="sep"></div>
+      <div class="lbl">Vp (apparent, from Wadati + chord geometry): <span class="mono" id="vpAppOut">-</span></div>
+
+      <div class="sep"></div>
 
       <div class="row">
         <div class="lbl">Vp (km/s):</div>
@@ -138,7 +147,19 @@
 
       <div class="sep"></div>
 
-      <div class="row"><div class="lbl">Choose exactly 3 stations (need P & S):</div></div>
+      <div class="row">
+        <div class="lbl">σ(pick) s:</div>
+        <input id="sigPickIn" type="number" value="0.10" step="0.01" min="0" max="2"/>
+        <div class="lbl">σ(Vp) km/s:</div>
+        <input id="sigVpIn" type="number" value="0.30" step="0.05" min="0" max="2"/>
+        <div class="lbl">σ(Vp/Vs):</div>
+        <input id="sigVpVsIn" type="number" value="0.05" step="0.01" min="0" max="0.5"/>
+      </div>
+      <div class="small">1-σ uncertainties for Monte Carlo error propagation (N=400 trials). Set to 0 to disable.</div>
+
+      <div class="sep"></div>
+
+      <div class="row"><div class="lbl">Choose stations (need P & S — exactly 3 for chord method, ≥ 3 for joint LS):</div></div>
       <div class="checks" id="triChecks"></div>
 
       <div class="sep"></div>
@@ -163,10 +184,9 @@
           <tr>
             <th>Station</th>
             <th>dt = Ts−Tp (s)</th>
-            <th>Dhyp (formula) km</th>
-            <th>Dhyp (slowness) km</th>
+            <th>Dhyp (km)</th>
+            <th>Dhyp (Wadati) km</th>
             <th>|ΔD| km</th>
-            <th>rel Δ</th>
           </tr>
         </thead>
         <tbody id="DhypCheckTable"></tbody>
@@ -187,6 +207,30 @@
       </table>
 
       <div class="small">If any two circles do not overlap, the chord is undefined (solve will stop).</div>
+    </div>
+
+    <h2>5) Joint LS Inversion (N stations, Levenberg–Marquardt)</h2>
+    <div class="pad">
+      <div class="row">
+        <button class="btn green" id="btnSolveJoint">Solve (joint LS)</button>
+        <span class="small">Uses all currently-checked stations (need ≥ 3). Vp/Vs fixed from input above. Solves for (x, y, depth, To, Vp).</span>
+      </div>
+
+      <div class="sep"></div>
+      <div class="lbl">N stations: <span class="mono" id="njOut">-</span></div>
+      <div class="lbl">Epicenter: <span class="mono" id="epiJointOut">-</span></div>
+      <div class="lbl">Depth: <span class="mono" id="depthJointOut">-</span></div>
+      <div class="lbl">Origin time: <span class="mono" id="toJointOut">-</span></div>
+      <div class="lbl">Vp: <span class="mono" id="vpJointOut">-</span></div>
+      <div class="lbl">RMS residual: <span class="mono" id="rmsJointOut">-</span></div>
+      <div class="lbl">LM iterations: <span class="mono" id="iterJointOut">-</span></div>
+
+      <div class="sep"></div>
+      <table>
+        <thead><tr><th>Station</th><th>Tp resid (s)</th><th>Ts resid (s)</th></tr></thead>
+        <tbody id="residTableJoint"></tbody>
+      </table>
+      <div class="small">Asymptotic σ from <span class="mono">σ²·(JᵀJ)⁻¹</span> with σ² = RSS/(2N−5). Map circles drawn at radius = Depi_i (geometric epicentral distance at converged solution).</div>
     </div>
   </div>
 
@@ -286,6 +330,8 @@ const state = {
   base:{xmin:0,xmax:10},
   isDragging:false,
   dragStart:null,
+  dragMoved:false,    // set true once cursor moves > DRAG_PX_THRESHOLD; suppresses trailing click
+
   map:null,
   baseLayers:{},
   activeBase:null,
@@ -306,8 +352,12 @@ const els = {
   btnWadati:document.getElementById("btnWadati"),
   originTime:document.getElementById("originTime"),
   vpvsOut:document.getElementById("vpvsOut"),
+  vpAppOut:document.getElementById("vpAppOut"),
   vpIn:document.getElementById("vpIn"),
   vpvsIn:document.getElementById("vpvsIn"),
+  sigPickIn:document.getElementById("sigPickIn"),
+  sigVpIn:document.getElementById("sigVpIn"),
+  sigVpVsIn:document.getElementById("sigVpVsIn"),
   triChecks:document.getElementById("triChecks"),
   btnSolve:document.getElementById("btnSolve"),
   basemapSel:document.getElementById("basemapSel"),
@@ -315,6 +365,15 @@ const els = {
   depthOut:document.getElementById("depthOut"),
   DhypCheckTable:document.getElementById("DhypCheckTable"),
   depthTable:document.getElementById("depthTable"),
+  btnSolveJoint:document.getElementById("btnSolveJoint"),
+  njOut:document.getElementById("njOut"),
+  epiJointOut:document.getElementById("epiJointOut"),
+  depthJointOut:document.getElementById("depthJointOut"),
+  toJointOut:document.getElementById("toJointOut"),
+  vpJointOut:document.getElementById("vpJointOut"),
+  rmsJointOut:document.getElementById("rmsJointOut"),
+  iterJointOut:document.getElementById("iterJointOut"),
+  residTableJoint:document.getElementById("residTableJoint"),
   waveBox:document.getElementById("waveBox"),
   wadatiBox:document.getElementById("wadatiBox"),
   waveCanvas:document.getElementById("waveCanvas"),
@@ -340,6 +399,14 @@ function hhmmss_utc(epochSec){
   const mm=String(d.getUTCMinutes()).padStart(2,"0");
   const ss=String(d.getUTCSeconds()).padStart(2,"0");
   return `${hh}:${mm}:${ss}`;
+}
+
+/* ---------- HTML escape (for any user/file-derived text rendered as HTML) ---------- */
+function escapeHtml(s){
+  if(s == null) return "";
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"
+  }[c]));
 }
 
 /* ---------- Validation ---------- */
@@ -491,7 +558,7 @@ function updateMapStations(){
       background:${hasPS?"#38bdf8":"rgba(229,231,235,.65)"};
       border:2px solid rgba(0,0,0,.55);box-shadow:0 0 0 2px rgba(255,255,255,.12);"></div>`,
       iconSize:[14,14], iconAnchor:[7,7]});
-    L.marker([s.lat,s.lon],{icon}).addTo(state.mapLayers.stations).bindPopup(`<b>${code}</b><br/>lat=${s.lat.toFixed(4)} lon=${s.lon.toFixed(4)}`);
+    L.marker([s.lat,s.lon],{icon}).addTo(state.mapLayers.stations).bindPopup(`<b>${escapeHtml(code)}</b><br/>lat=${s.lat.toFixed(4)} lon=${s.lon.toFixed(4)}`);
   }
   if(latlngs.length) state.map.fitBounds(L.latLngBounds(latlngs).pad(0.2));
 }
@@ -511,7 +578,7 @@ function renderStationList(){
     const s=state.stations[code];
     const div=document.createElement("div");
     div.className="list-item"+(state.current===code?" active":"");
-    div.innerHTML=`<span>${code}</span><span class="tag">${Number.isFinite(s.lat)?s.lat.toFixed(3):"?"}, ${Number.isFinite(s.lon)?s.lon.toFixed(3):"?"}</span>`;
+    div.innerHTML=`<span>${escapeHtml(code)}</span><span class="tag">${Number.isFinite(s.lat)?s.lat.toFixed(3):"?"}, ${Number.isFinite(s.lon)?s.lon.toFixed(3):"?"}</span>`;
     div.onclick=()=>{ state.current=code; resetViewToCurrent(); renderStationList(); renderPicks(); drawWave(); };
     els.stationList.appendChild(div);
   });
@@ -523,7 +590,7 @@ function renderPicks(){
     const pAbs=(Number.isFinite(pk.p_rel)&&Number.isFinite(s.start_epoch))?s.start_epoch+pk.p_rel:NaN;
     const sAbs=(Number.isFinite(pk.s_rel)&&Number.isFinite(s.start_epoch))?s.start_epoch+pk.s_rel:NaN;
     const tr=document.createElement("tr");
-    tr.innerHTML=`<td class="mono">${code}</td><td class="mono">${Number.isFinite(pAbs)?hhmmss_msec_utc(pAbs):"-"}</td><td class="mono">${Number.isFinite(sAbs)?hhmmss_msec_utc(sAbs):"-"}</td>`;
+    tr.innerHTML=`<td class="mono">${escapeHtml(code)}</td><td class="mono">${Number.isFinite(pAbs)?hhmmss_msec_utc(pAbs):"-"}</td><td class="mono">${Number.isFinite(sAbs)?hhmmss_msec_utc(sAbs):"-"}</td>`;
     els.picksTable.appendChild(tr);
   });
 }
@@ -533,7 +600,8 @@ function renderTriChecks(){
     const lab=document.createElement("label");
     const cb=document.createElement("input");
     cb.type="checkbox"; cb.dataset.code=code;
-    lab.appendChild(cb); lab.appendChild(document.createTextNode(code));
+    lab.appendChild(cb);
+    lab.appendChild(document.createTextNode(code)); // createTextNode escapes safely
     els.triChecks.appendChild(lab);
   });
 }
@@ -680,15 +748,18 @@ function drawWave(){
   }
   ctx.stroke();
 
+  const rootStyle = getComputedStyle(document.documentElement);
+  const redColor = rootStyle.getPropertyValue('--red').trim();
+  const greenColor = rootStyle.getPropertyValue('--green').trim();
   const pk=state.picks[state.current]||{};
   if(Number.isFinite(pk.p_rel)){
     const xx=xToPx(pk.p_rel,area);
-    ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--red');
+    ctx.strokeStyle=redColor;
     ctx.setLineDash([6,4]); ctx.beginPath(); ctx.moveTo(xx,area.y0); ctx.lineTo(xx,area.y0+area.ph); ctx.stroke(); ctx.setLineDash([]);
   }
   if(Number.isFinite(pk.s_rel)){
     const xx=xToPx(pk.s_rel,area);
-    ctx.strokeStyle=getComputedStyle(document.documentElement).getPropertyValue('--green');
+    ctx.strokeStyle=greenColor;
     ctx.setLineDash([6,4]); ctx.beginPath(); ctx.moveTo(xx,area.y0); ctx.lineTo(xx,area.y0+area.ph); ctx.stroke(); ctx.setLineDash([]);
   }
   ctx.restore();
@@ -696,12 +767,12 @@ function drawWave(){
   ctx.font="12px system-ui";
   if(Number.isFinite(pk.p_rel)){
     const xx=xToPx(pk.p_rel,area);
-    ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--red');
+    ctx.fillStyle=redColor;
     ctx.fillText("P", xx+4, area.y0+14);
   }
   if(Number.isFinite(pk.s_rel)){
     const xx=xToPx(pk.s_rel,area);
-    ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--green');
+    ctx.fillStyle=greenColor;
     ctx.fillText("S", xx+4, area.y0+28);
   }
 
@@ -736,6 +807,8 @@ els.waveCanvas.addEventListener("wheel",(ev)=>{
   state.view.xmin=xmin; state.view.xmax=xmax;
   autoscaleY(); drawWave();
 },{passive:false});
+const DRAG_PX_THRESHOLD = 4;   // cursor movement above this counts as a drag, not a click
+
 els.waveCanvas.addEventListener("mousedown",(ev)=>{
   const cur=getCurrent(); if(!cur) return;
   const {w,h}=getWaveSize();
@@ -743,15 +816,29 @@ els.waveCanvas.addEventListener("mousedown",(ev)=>{
   const p=canvasEventToCssPx(ev, els.waveCanvas);
   if(p.x<area.x0||p.x>area.x0+area.pw||p.y<area.y0||p.y>area.y0+area.ph) return;
   state.isDragging=true;
-  state.dragStart={px:p.x,xmin:state.view.xmin,xmax:state.view.xmax, area};
+  state.dragMoved=false;
+  state.dragStart={px:p.x, py:p.y, xmin:state.view.xmin, xmax:state.view.xmax, area};
 });
-window.addEventListener("mouseup",()=>{ state.isDragging=false; state.dragStart=null; });
+window.addEventListener("mouseup",()=>{
+  // keep state.dragMoved set; the trailing click handler reads & clears it
+  state.isDragging=false;
+  state.dragStart=null;
+});
 window.addEventListener("mousemove",(ev)=>{
   if(!state.isDragging||!state.dragStart) return;
   const cur=getCurrent(); if(!cur) return;
   const r=els.waveCanvas.getBoundingClientRect();
   const px=ev.clientX-r.left;
+  const py=ev.clientY-r.top;
   const dxPx=px-state.dragStart.px;
+  const dyPx=py-state.dragStart.py;
+
+  // Promote to "drag" once we move past the threshold in either axis.
+  if(!state.dragMoved &&
+     (Math.abs(dxPx) > DRAG_PX_THRESHOLD || Math.abs(dyPx) > DRAG_PX_THRESHOLD)){
+    state.dragMoved=true;
+  }
+  if(!state.dragMoved) return;   // tiny jitter: don't pan yet, and let click fire as a pick
 
   const area=state.dragStart.area;
   const span=state.dragStart.xmax-state.dragStart.xmin;
@@ -766,6 +853,9 @@ window.addEventListener("mousemove",(ev)=>{
   autoscaleY(); drawWave();
 });
 els.waveCanvas.addEventListener("click",(ev)=>{
+  // Suppress the click that browsers fire at the end of a drag-pan.
+  if(state.dragMoved){ state.dragMoved=false; return; }
+
   const cur=getCurrent(); if(!cur) return;
   const {w,h}=getWaveSize();
   const area=plotArea(w,h);
@@ -868,29 +958,25 @@ function computeWadati(){
 
 /* ---------- Geometry (local plane) + Geodesic distance ---------- */
 const R_EARTH=6371.0;
+const toRad = d => d*Math.PI/180;
 function equirect_xy(lat,lon,lat0,lon0){
-  const latr=lat*Math.PI/180, lonr=lon*Math.PI/180;
-  const lat0r=lat0*Math.PI/180, lon0r=lon0*Math.PI/180;
-  const x=(lonr-lon0r)*Math.cos(lat0r)*R_EARTH;
-  const y=(latr-lat0r)*R_EARTH;
+  const x=(toRad(lon)-toRad(lon0))*Math.cos(toRad(lat0))*R_EARTH;
+  const y=(toRad(lat)-toRad(lat0))*R_EARTH;
   return {x,y};
 }
 function xy_to_latlon(x,y,lat0,lon0){
-  const lat0r=lat0*Math.PI/180;
   const dlat=y/R_EARTH;
-  const dlon=x/(R_EARTH*Math.cos(lat0r));
+  const dlon=x/(R_EARTH*Math.cos(toRad(lat0)));
   return {lat:lat0+dlat*180/Math.PI, lon:lon0+dlon*180/Math.PI};
 }
 function dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.sqrt(dx*dx+dy*dy); }
 
 function haversine_km(lat1, lon1, lat2, lon2){
-  const R=6371.0;
-  const toRad=d=>d*Math.PI/180;
   const dLat=toRad(lat2-lat1);
   const dLon=toRad(lon2-lon1);
   const a=Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
   const c=2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
-  return R*c;
+  return R_EARTH*c;
 }
 
 /* intersections => chord endpoints */
@@ -903,6 +989,7 @@ function circleCircleIntersections(c1,r1,c2,r2){
   const a = (r1*r1 - r2*r2 + d*d) / (2*d);
   const h2 = r1*r1 - a*a;
   if(h2 < -1e-9) return {ok:false, msg:"numeric h^2<0"};
+  if(h2 < 1e-9)  return {ok:false, msg:"tangent circles (chord is a single point)"};
   const h = Math.sqrt(Math.max(0,h2));
 
   const x0=c1.x, y0=c1.y, x1=c2.x, y1=c2.y;
@@ -926,26 +1013,153 @@ function lineIntersection(p1,p2,p3,p4){
   return {ok:true, p:{x:px,y:py}};
 }
 
-/* Hypocentral distance */
+/* Hypocentral distance from S-P time and velocities */
 function Dhyp_from_formula(dt, Vp, Vs){ return dt * (Vp*Vs) / (Vp - Vs); }
-function Dhyp_from_slowness(dt, Vp, Vs){ return dt / ((1/Vs) - (1/Vp)); }
 
-/* robust depth */
-function robustDepthKm(Dhyp, Depi){
-  const hi=[];
-  for(let i=0;i<Dhyp.length;i++){
-    const v = Dhyp[i]*Dhyp[i] - Depi[i]*Depi[i];
-    if(v <= 0) continue;
-    hi.push(Math.sqrt(v));
+/* statistics helpers */
+function median(sortedAsc){
+  const n = sortedAsc.length;
+  if(n === 0) return NaN;
+  const mid = Math.floor(n/2);
+  return (n % 2 === 0) ? 0.5*(sortedAsc[mid-1] + sortedAsc[mid]) : sortedAsc[mid];
+}
+function gaussian(){
+  // Box-Muller; avoid log(0).
+  let u=0, v=0;
+  while(u===0) u=Math.random();
+  while(v===0) v=Math.random();
+  return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v);
+}
+function summarize(arr){
+  // Returns median and 68% half-interval (used as 1-σ). Robust to non-Gaussian shape.
+  if(arr.length < 3) return {med:NaN, sigma:NaN, q16:NaN, q84:NaN, n:arr.length};
+  const sorted=[...arr].sort((a,b)=>a-b);
+  const med = median(sorted);
+  const q16 = sorted[Math.max(0, Math.floor(0.16*sorted.length))];
+  const q84 = sorted[Math.min(sorted.length-1, Math.floor(0.84*sorted.length))];
+  const sigma = 0.5*(q84 - q16);
+  return {med, sigma, q16, q84, n:sorted.length};
+}
+
+/* Least-squares intersection of N chord lines in xy plane.
+   Each chord {p1,p2} defines a line; we minimize Σ perpendicular distance². */
+function leastSquaresChordPoint(chords){
+  let A11=0, A12=0, A22=0, b1=0, b2=0, valid=0;
+  for(const c of chords){
+    const dx = c.p2.x - c.p1.x, dy = c.p2.y - c.p1.y;
+    const len = Math.sqrt(dx*dx + dy*dy);
+    if(len < 1e-12) continue;          // tangent / degenerate chord
+    const nx = -dy/len, ny = dx/len;   // unit normal
+    const d  = nx*c.p1.x + ny*c.p1.y;  // line: nx·x + ny·y = d
+    A11 += nx*nx; A12 += nx*ny; A22 += ny*ny;
+    b1  += nx*d;  b2  += ny*d;
+    valid++;
   }
-  if(hi.length===0) return {ok:false, hi:[], med:NaN, robustStd:NaN};
+  if(valid < 2) return {ok:false, msg:"need ≥ 2 non-degenerate chords"};
+  const det = A11*A22 - A12*A12;
+  if(Math.abs(det) < 1e-12) return {ok:false, msg:"chords are parallel"};
+  const x = ( A22*b1 - A12*b2)/det;
+  const y = (-A12*b1 + A11*b2)/det;
+  return {ok:true, p:{x,y}};
+}
+function chordResidualRMS(epi, chords){
+  let s2=0, n=0;
+  for(const c of chords){
+    const dx = c.p2.x - c.p1.x, dy = c.p2.y - c.p1.y;
+    const len = Math.sqrt(dx*dx + dy*dy);
+    if(len < 1e-12) continue;
+    const nx = -dy/len, ny = dx/len;
+    const dLine = nx*c.p1.x + ny*c.p1.y;
+    const dPt   = nx*epi.x  + ny*epi.y;
+    s2 += (dPt - dLine)**2;
+    n++;
+  }
+  return n>0 ? Math.sqrt(s2/n) : 0;
+}
 
-  const sorted=[...hi].sort((a,b)=>a-b);
-  const med = sorted[Math.floor(sorted.length/2)];
-  const absdev = sorted.map(x=>Math.abs(x-med)).sort((a,b)=>a-b);
-  const mad = absdev[Math.floor(absdev.length/2)];
-  const robustStd = 1.4826 * mad;
-  return {ok:true, hi, med, robustStd};
+/* Pure compute (no DOM): runs the full 3-station chord-intersection solve
+   for arbitrary (possibly perturbed) picks and velocities. */
+function computeSolution(checked, picks, vp, vpvs){
+  const vs = vp/vpvs;
+  if(!(vp>0) || !(vs>0) || !(vp>vs)) return {ok:false, reason:"invalid velocities"};
+
+  const Dhyp=[], lats=[], lons=[];
+  for(const code of checked){
+    const s = state.stations[code];
+    if(!s || !Number.isFinite(s.lat) || !Number.isFinite(s.lon)) return {ok:false, reason:"station coords"};
+    const pk = picks[code];
+    if(!pk || !Number.isFinite(pk.p_rel) || !Number.isFinite(pk.s_rel)) return {ok:false, reason:"picks"};
+    const dt = pk.s_rel - pk.p_rel;
+    if(!(dt > 0)) return {ok:false, reason:"dt<=0"};
+    Dhyp.push(dt * vp*vs/(vp-vs));
+    lats.push(s.lat); lons.push(s.lon);
+  }
+
+  const lat0 = (lats[0]+lats[1]+lats[2])/3;
+  const lon0 = (lons[0]+lons[1]+lons[2])/3;
+  const C = [
+    equirect_xy(lats[0],lons[0],lat0,lon0),
+    equirect_xy(lats[1],lons[1],lat0,lon0),
+    equirect_xy(lats[2],lons[2],lat0,lon0),
+  ];
+
+  const pairs = [[0,1],[0,2],[1,2]];
+  const chords = [];
+  for(const [i,j] of pairs){
+    const inter = circleCircleIntersections(C[i], Dhyp[i], C[j], Dhyp[j]);
+    if(!inter.ok) return {ok:false, reason:`circles ${checked[i]}/${checked[j]}: ${inter.msg}`};
+    chords.push({p1:inter.p1, p2:inter.p2});
+  }
+
+  const ls = leastSquaresChordPoint(chords);
+  if(!ls.ok) return {ok:false, reason:ls.msg};
+  const epi = ls.p;
+  const geomResidKm = chordResidualRMS(epi, chords);
+  const epiLL = xy_to_latlon(epi.x, epi.y, lat0, lon0);
+
+  const Depi=[];
+  for(let i=0;i<checked.length;i++){
+    const st = state.stations[checked[i]];
+    Depi.push(haversine_km(epiLL.lat, epiLL.lon, st.lat, st.lon));
+  }
+
+  const hs=[];
+  for(let i=0;i<3;i++){
+    const v = Dhyp[i]*Dhyp[i] - Depi[i]*Depi[i];
+    if(v > 0) hs.push(Math.sqrt(v));
+  }
+  if(hs.length < 2) return {ok:false, reason:"need ≥ 2 stations with Dhyp ≥ Depi"};
+  hs.sort((a,b)=>a-b);
+  const depth = median(hs);
+
+  return {ok:true, lat0, lon0, C, chords, epi, epiLL, Dhyp, Depi, hs, depth, geomResidKm};
+}
+
+/* Monte Carlo: perturb picks (P, S independently) and velocities and re-solve. */
+function monteCarloUncertainty(checked, vp0, vpvs0, sigPick, sigVp, sigVpVs, N){
+  const lats=[], lons=[], depths=[];
+  let failed = 0;
+  for(let t=0; t<N; t++){
+    const vp   = vp0   + (sigVp   > 0 ? gaussian()*sigVp   : 0);
+    const vpvs = vpvs0 + (sigVpVs > 0 ? gaussian()*sigVpVs : 0);
+    if(!(vp>0) || !(vpvs>1.0001)){ failed++; continue; }
+
+    const picks = {};
+    for(const code of checked){
+      const pk = state.picks[code];
+      picks[code] = {
+        p_rel: pk.p_rel + (sigPick > 0 ? gaussian()*sigPick : 0),
+        s_rel: pk.s_rel + (sigPick > 0 ? gaussian()*sigPick : 0),
+      };
+    }
+
+    const r = computeSolution(checked, picks, vp, vpvs);
+    if(!r.ok){ failed++; continue; }
+    lats.push(r.epiLL.lat);
+    lons.push(r.epiLL.lon);
+    depths.push(r.depth);
+  }
+  return {lats, lons, depths, failed, total:N};
 }
 
 /* map drawing */
@@ -955,10 +1169,10 @@ function drawHypoCircles(codes, Dhyp){
     const s=state.stations[code];
     const color=["#ef4444","#22c55e","#38bdf8"][i%3];
     L.circle([s.lat,s.lon],{
-      radius: Dhyp[i]*1000,  // ✅ Dhyp (km) → meters
+      radius: Dhyp[i]*1000,  // Dhyp (km) → meters
       color, weight:2, opacity:0.95, fillOpacity:0.06
     }).addTo(state.mapLayers.circles)
-      .bindPopup(`<b>${code}</b><br/>Dhyp=${Dhyp[i].toFixed(2)} km`);
+      .bindPopup(`<b>${escapeHtml(code)}</b><br/>Dhyp=${Dhyp[i].toFixed(2)} km`);
   }
 }
 function drawChord(pA, pB, lat0, lon0, color){
@@ -975,125 +1189,574 @@ function drawEpicenter(epi, lat0, lon0){
   return epiLL;
 }
 
+/* ---------- Apparent Vp refinement from Wadati + chord geometry ----------
+   At convergence, the geometric Dhyp from the chord solution and the kinematic
+   Dhyp = Vp·(Tp − To) from Wadati agree at every station. Iterating to that
+   fixed point removes Vp as a free input — it becomes a data product. */
+function refineVpApparent(checked, vpvs, Vp_seed){
+  if(!Number.isFinite(state.wadati?.To)) return {ok:false, reason:"need Wadati To"};
+
+  const MAX_ITER     = 30;
+  const VP_TOL       = 0.002;    // km/s
+  const VP_MIN       = 2.0;
+  const VP_MAX       = 9.0;
+  const MAX_BACKOFF  = 6;
+
+  // The chord intersection itself still uses only the 3 'checked' stations
+  // (geometry), but the apparent-Vp average is taken over EVERY station with
+  // valid P & S picks. With N stations the mean is far more stable than the
+  // 3-sample median, and σ(Vp) becomes statistically meaningful.
+  const allValid = [];
+  for(const code of state.order){
+    const s  = state.stations[code];
+    const pk = state.picks[code];
+    if(!s || !pk) continue;
+    if(!Number.isFinite(pk.p_rel) || !Number.isFinite(pk.s_rel)) continue;
+    if(!(pk.s_rel - pk.p_rel > 0)) continue;
+    if(!Number.isFinite(s.lat) || !Number.isFinite(s.lon) || !Number.isFinite(s.start_epoch)) continue;
+    allValid.push(code);
+  }
+  if(allValid.length < 2){
+    return {ok:false, reason:"need ≥ 2 stations with P & S picks for apparent-Vp averaging"};
+  }
+
+  // Initial chord solve at the clamped seed.
+  let Vp_cur = Math.max(VP_MIN, Math.min(VP_MAX, Vp_seed));
+  let trial  = computeSolution(checked, state.picks, Vp_cur, vpvs);
+  if(!trial.ok) return {ok:false, reason:`seed Vp=${Vp_cur.toFixed(2)} km/s: ${trial.reason}`};
+
+  // Per-station apparent Vp at the *current* chord-method epicenter+depth:
+  //   Depi_i  = haversine(epi, station_i)
+  //   Dhyp_i  = √(Depi_i² + h²)
+  //   Vp_i    = Dhyp_i / (Tp_i − To)
+  function perStationApparentVp(currentTrial){
+    const vps = [], codes = [];
+    for(const code of allValid){
+      const s  = state.stations[code];
+      const pk = state.picks[code];
+      const TpAbs  = s.start_epoch + pk.p_rel;
+      const tShift = TpAbs - state.wadati.To;
+      if(!(tShift > 0)) continue;
+      const Depi_km   = haversine_km(currentTrial.epiLL.lat, currentTrial.epiLL.lon, s.lat, s.lon);
+      const Dhyp_geom = Math.sqrt(Depi_km*Depi_km + currentTrial.depth*currentTrial.depth);
+      vps.push(Dhyp_geom / tShift);
+      codes.push(code);
+    }
+    return {vps, codes};
+  }
+
+  let perStation = [];
+  let perStationCodes = [];
+  let iter = 0;
+  let converged = false;
+  const warnings = [];
+
+  for(iter=0; iter<MAX_ITER; iter++){
+    const r = perStationApparentVp(trial);
+    perStation = r.vps;
+    perStationCodes = r.codes;
+    if(perStation.length < 2){ warnings.push("too few stations with Tp > To"); break; }
+
+    // Arithmetic MEAN across all valid stations (user-requested)
+    const Vp_target_raw = perStation.reduce((a,b) => a+b, 0) / perStation.length;
+    const Vp_target     = Math.max(VP_MIN, Math.min(VP_MAX, Vp_target_raw));
+    if(Math.abs(Vp_target - Vp_target_raw) > 1e-6){
+      warnings.push(`target Vp ${Vp_target_raw.toFixed(2)} clamped to [${VP_MIN}, ${VP_MAX}]`);
+    }
+    if(Math.abs(Vp_target - Vp_cur) < VP_TOL){ converged = true; break; }
+
+    // Step toward target with halving back-off if chord geometry collapses.
+    let step = Vp_target - Vp_cur;
+    let accepted = false;
+    let lastBadReason = null;
+    for(let bo=0; bo<=MAX_BACKOFF; bo++){
+      const Vp_try = Math.max(VP_MIN, Math.min(VP_MAX, Vp_cur + step));
+      const next = computeSolution(checked, state.picks, Vp_try, vpvs);
+      if(next.ok){ Vp_cur = Vp_try; trial = next; accepted = true; break; }
+      lastBadReason = next.reason;
+      step *= 0.5;
+      if(Math.abs(step) < VP_TOL) break;
+    }
+    if(!accepted){
+      warnings.push(`iter ${iter+1}: every step toward Vp_target=${Vp_target.toFixed(2)} broke chord geometry (${lastBadReason}); last good Vp = ${Vp_cur.toFixed(3)}`);
+      break;
+    }
+  }
+
+  const warning = warnings.length ? warnings.join(" | ") : null;
+
+  // Statistics across all contributing stations
+  const n = perStation.length;
+  const mean_ = perStation.reduce((a,b) => a+b, 0) / Math.max(1, n);
+  const var_  = perStation.reduce((a,b) => a + (b - mean_)*(b - mean_), 0) / Math.max(1, n-1);
+  const sigVp_data = Math.sqrt(var_);
+  const sigVp_mean = (n > 0) ? sigVp_data / Math.sqrt(n) : NaN;   // SE of the mean
+  const sortedVp = [...perStation].sort((a,b) => a-b);
+  const Vp_median = sortedVp.length ? median(sortedVp) : NaN;
+
+  return {
+    ok: true,
+    Vp: Vp_cur,
+    Vp_median,
+    sigVp_data,      // station-to-station scatter (1-σ)
+    sigVp_mean,      // standard error of the mean
+    perStation,
+    perStationCodes,
+    nUsed: n,
+    iterations: iter + 1,
+    converged,
+    sol: trial,
+    warning,
+  };
+}
+
+/* ---------- Small linear algebra (used by joint LS) ---------- */
+function gaussSolve(Aorig, borig){
+  // Solve A x = b for square A by Gaussian elimination with partial pivoting.
+  const n = Aorig.length;
+  const M = Aorig.map((row,i) => [...row, borig[i]]);
+  for(let k=0;k<n;k++){
+    let piv = k;
+    for(let i=k+1;i<n;i++) if(Math.abs(M[i][k]) > Math.abs(M[piv][k])) piv = i;
+    if(Math.abs(M[piv][k]) < 1e-14) return null;
+    if(piv !== k){ const tmp = M[k]; M[k] = M[piv]; M[piv] = tmp; }
+    for(let i=k+1;i<n;i++){
+      const f = M[i][k] / M[k][k];
+      for(let j=k;j<=n;j++) M[i][j] -= f * M[k][j];
+    }
+  }
+  const x = new Array(n);
+  for(let i=n-1;i>=0;i--){
+    let s = M[i][n];
+    for(let j=i+1;j<n;j++) s -= M[i][j] * x[j];
+    x[i] = s / M[i][i];
+  }
+  return x;
+}
+function matInverse(A){
+  const n = A.length;
+  const cols = [];
+  for(let c=0;c<n;c++){
+    const e = new Array(n).fill(0); e[c] = 1;
+    const x = gaussSolve(A, e);
+    if(x === null) return null;
+    cols.push(x);
+  }
+  const inv = Array.from({length:n}, () => new Array(n).fill(0));
+  for(let i=0;i<n;i++) for(let j=0;j<n;j++) inv[i][j] = cols[j][i];
+  return inv;
+}
+function matTransMat(A){
+  // A^T · A   (J^T J in normal equations)
+  const m = A.length, n = A[0].length;
+  const out = Array.from({length:n}, () => new Array(n).fill(0));
+  for(let i=0;i<m;i++){
+    const Ai = A[i];
+    for(let j=0;j<n;j++){
+      const aij = Ai[j];
+      for(let k=0;k<n;k++) out[j][k] += aij * Ai[k];
+    }
+  }
+  return out;
+}
+function matTransVec(A, b){
+  // A^T · b
+  const m = A.length, n = A[0].length;
+  const out = new Array(n).fill(0);
+  for(let i=0;i<m;i++){
+    const bi = b[i], Ai = A[i];
+    for(let j=0;j<n;j++) out[j] += Ai[j] * bi;
+  }
+  return out;
+}
+
+/* ---------- Joint N-station LS hypocenter inversion ----------
+   m = [x, y, h, To_shifted, Vp]
+     x, y, h  : local-plane km
+     To_shifted: seconds relative to T_REF (numerical stability)
+     Vp        : km/s (Vp/Vs fixed from input)
+   Forward model per station:
+     Dhyp_i  = sqrt((x-x_i)^2 + (y-y_i)^2 + h^2)
+     Tp_pred = To + Dhyp_i / Vp
+     Ts_pred = To + Dhyp_i / (Vp / VpVs)
+   Solved by Levenberg–Marquardt; covariance from σ²·(J^T J)^-1, σ² = RSS/(2N-5).
+*/
+function jointForward(m, stXY, vpvs){
+  const [x, y, h, To, Vp] = m;
+  const Vs = Vp / vpvs;
+  const N = stXY.length;
+  const Tp = new Array(N), Ts = new Array(N), Dhyp = new Array(N);
+  for(let i=0;i<N;i++){
+    const dx = x - stXY[i].x, dy = y - stXY[i].y;
+    const Dh = Math.sqrt(dx*dx + dy*dy + h*h);
+    Dhyp[i] = Dh;
+    Tp[i]   = To + Dh / Vp;
+    Ts[i]   = To + Dh / Vs;
+  }
+  return {Tp, Ts, Dhyp};
+}
+function jointResiduals(m, stXY, vpvs, Tp_obs, Ts_obs){
+  const f = jointForward(m, stXY, vpvs);
+  const N = stXY.length;
+  const r = new Array(2*N);
+  for(let i=0;i<N;i++){ r[i] = Tp_obs[i] - f.Tp[i]; r[N+i] = Ts_obs[i] - f.Ts[i]; }
+  return r;
+}
+function jointJacobian(m, stXY, vpvs){
+  // Rows are ∂(predicted)/∂m. Normal equations use (J^T J) dm = J^T r.
+  const [x, y, h, , Vp] = m;
+  const N = stXY.length;
+  const J = new Array(2*N);
+  const inv_Vp = 1/Vp;
+  const inv_Vs = vpvs/Vp;        // 1/Vs = vpvs/Vp
+  for(let i=0;i<N;i++){
+    const dx = x - stXY[i].x, dy = y - stXY[i].y;
+    const Dh = Math.sqrt(dx*dx + dy*dy + h*h);
+    const ux = dx/Dh, uy = dy/Dh, uh = h/Dh;
+    J[i]   = [inv_Vp*ux, inv_Vp*uy, inv_Vp*uh, 1, -Dh/(Vp*Vp)];
+    J[N+i] = [inv_Vs*ux, inv_Vs*uy, inv_Vs*uh, 1, -Dh*vpvs/(Vp*Vp)];
+  }
+  return J;
+}
+
+function levenbergMarquardt(m0, stXY, vpvs, Tp_obs, Ts_obs, opts){
+  opts = opts || {};
+  const maxIter = opts.maxIter ?? 80;
+  const tol     = opts.tol     ?? 1e-9;
+  let lambda    = opts.lambda  ?? 1e-3;
+
+  let m = [...m0];
+  let r = jointResiduals(m, stXY, vpvs, Tp_obs, Ts_obs);
+  let rss = r.reduce((a,b) => a + b*b, 0);
+
+  let iter = 0, converged = false;
+  for(; iter<maxIter; iter++){
+    const J  = jointJacobian(m, stXY, vpvs);
+    const JtJ = matTransMat(J);
+    const Jtr = matTransVec(J, r);
+    // Marquardt diagonal scaling: (JtJ + λ·diag(JtJ)) dm = Jtr
+    const A = JtJ.map((row,i) => row.map((v,j) => i===j ? v*(1+lambda) : v));
+    const dm = gaussSolve(A, Jtr);
+    if(!dm){ break; }
+
+    const m_new = m.map((v,i) => v + dm[i]);
+    // Light physical clamps (LM can briefly overshoot into nonphysical regions)
+    if(m_new[2] < 0)    m_new[2] = Math.max(0.1, -m_new[2]);     // depth ≥ 0
+    if(m_new[4] < 0.5)  m_new[4] = 0.5;                          // Vp not collapsing
+
+    const r_new   = jointResiduals(m_new, stXY, vpvs, Tp_obs, Ts_obs);
+    const rss_new = r_new.reduce((a,b) => a + b*b, 0);
+
+    if(rss_new < rss){
+      const stepNorm = Math.sqrt(dm.reduce((a,b) => a + b*b, 0));
+      const mNorm    = Math.sqrt(m.reduce((a,b) => a + b*b, 0));
+      const stepRel  = stepNorm / Math.max(mNorm, 1e-9);
+      const rssRel   = (rss - rss_new) / Math.max(rss, 1e-12);
+      m = m_new; r = r_new; rss = rss_new;
+      lambda = Math.max(lambda / 3, 1e-12);
+      if(stepRel < tol || rssRel < tol){ converged = true; iter++; break; }
+    } else {
+      lambda *= 4;
+      if(lambda > 1e10){ break; }
+    }
+  }
+
+  // Final covariance from converged J
+  const J = jointJacobian(m, stXY, vpvs);
+  const JtJ = matTransMat(J);
+  const JtJinv = matInverse(JtJ);
+  const nObs = 2 * stXY.length;
+  const dof  = Math.max(1, nObs - 5);
+  const var_obs = rss / dof;
+  let sigma_m = [NaN, NaN, NaN, NaN, NaN];
+  if(JtJinv){
+    sigma_m = JtJinv.map((row,i) => Math.sqrt(Math.max(0, var_obs * row[i])));
+  }
+  return {m, r, rss, dof, sigma_m, JtJinv, iter, converged};
+}
+
+function solveJointLS(){
+  const checked = [...els.triChecks.querySelectorAll("input[type=checkbox]:checked")].map(cb=>cb.dataset.code);
+  if(checked.length < 3){ alert("Joint LS needs ≥ 3 stations with P & S picks selected."); return; }
+
+  const vpvs = Number(els.vpvsIn.value);
+  if(!(vpvs > 1)){ alert("Set valid Vp/Vs (or run Wadati first)."); return; }
+  const Vp_seed = Number(els.vpIn.value);
+  if(!(Vp_seed > 0)){ alert("Set valid Vp seed."); return; }
+
+  // Gather picks; build station xy in plane centered on station centroid
+  const codes = [], Tp_obs_abs = [], Ts_obs_abs = [];
+  let cLat = 0, cLon = 0;
+  for(const code of checked){
+    const s = state.stations[code];
+    const pk = state.picks[code] || {};
+    if(!Number.isFinite(s?.lat) || !Number.isFinite(s?.lon)){ alert(`Station ${code} missing STLA/STLO`); return; }
+    if(!Number.isFinite(pk.p_rel) || !Number.isFinite(pk.s_rel)){ alert(`Station ${code} needs P & S picks`); return; }
+    if(!(pk.s_rel - pk.p_rel > 0)){ alert(`Station ${code}: Ts must be after Tp`); return; }
+    if(!Number.isFinite(s.start_epoch)){ alert(`Station ${code} missing start time`); return; }
+    codes.push(code);
+    cLat += s.lat; cLon += s.lon;
+    Tp_obs_abs.push(s.start_epoch + pk.p_rel);
+    Ts_obs_abs.push(s.start_epoch + pk.s_rel);
+  }
+  cLat /= codes.length; cLon /= codes.length;
+  const stXY = codes.map(code => {
+    const s = state.stations[code];
+    return equirect_xy(s.lat, s.lon, cLat, cLon);
+  });
+
+  // Shift times so the sampler sees O(1) numbers
+  const T_REF = Math.floor(Math.min(...Tp_obs_abs)) - 1.0;
+  const Tp_obs = Tp_obs_abs.map(t => t - T_REF);
+  const Ts_obs = Ts_obs_abs.map(t => t - T_REF);
+
+  // Initial guess
+  const To_seed_abs = Number.isFinite(state.wadati?.To) ? state.wadati.To : (Math.min(...Tp_obs_abs) - 5.0);
+  const m0 = [0, 0, 10.0, To_seed_abs - T_REF, Vp_seed];
+
+  const lm = levenbergMarquardt(m0, stXY, vpvs, Tp_obs, Ts_obs);
+
+  const [x_km, y_km, h_km, To_shift, Vp_fit] = lm.m;
+  const epiLL  = xy_to_latlon(x_km, y_km, cLat, cLon);
+  const To_abs = To_shift + T_REF;
+  const sig    = lm.sigma_m;
+  const sigLatDeg = sig[1] / R_EARTH * 180 / Math.PI;
+  const sigLonDeg = sig[0] / (R_EARTH * Math.cos(toRad(epiLL.lat))) * 180 / Math.PI;
+  const rms       = Math.sqrt(lm.rss / lm.r.length);
+
+  els.njOut.textContent       = `${codes.length}   (${2*codes.length} arrivals, dof = ${lm.dof})`;
+  els.epiJointOut.textContent =
+    `lat=${epiLL.lat.toFixed(4)}° ± ${sigLatDeg.toFixed(4)}° (±${sig[1].toFixed(2)} km),  `
+    + `lon=${epiLL.lon.toFixed(4)}° ± ${sigLonDeg.toFixed(4)}° (±${sig[0].toFixed(2)} km)`;
+  els.depthJointOut.textContent = `${h_km.toFixed(2)} ± ${sig[2].toFixed(2)} km`;
+  els.toJointOut.textContent    = `${hhmmss_msec_utc(To_abs)}  ± ${sig[3].toFixed(3)} s`;
+  els.vpJointOut.textContent    = `${Vp_fit.toFixed(3)} ± ${sig[4].toFixed(3)} km/s   (Vp/Vs fixed at ${vpvs.toFixed(4)})`;
+  els.rmsJointOut.textContent   = `${rms.toFixed(3)} s   (RSS=${lm.rss.toFixed(4)})`;
+  els.iterJointOut.textContent  = `${lm.iter}   (${lm.converged ? "converged" : "NOT converged"})`;
+
+  els.residTableJoint.innerHTML = "";
+  const N = codes.length;
+  for(let i=0;i<N;i++){
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="mono">${escapeHtml(codes[i])}</td>
+      <td class="mono">${lm.r[i].toFixed(3)}</td>
+      <td class="mono">${lm.r[N+i].toFixed(3)}</td>
+    `;
+    els.residTableJoint.appendChild(tr);
+  }
+
+  // Map: clear old chord-method artifacts, draw N circles at radius = Depi at converged solution
+  clearSolveLayers();
+  const fwd = jointForward(lm.m, stXY, vpvs);
+  for(let i=0;i<N;i++){
+    const s = state.stations[codes[i]];
+    const Depi_km = Math.sqrt(Math.max(0, fwd.Dhyp[i]*fwd.Dhyp[i] - h_km*h_km));
+    L.circle([s.lat, s.lon], {
+      radius: Depi_km * 1000,
+      color: "#22c55e", weight: 1.4, opacity: 0.75, fillOpacity: 0.025,
+    }).addTo(state.mapLayers.circles)
+      .bindPopup(`<b>${escapeHtml(codes[i])}</b><br/>Depi=${Depi_km.toFixed(2)} km<br/>Dhyp=${fwd.Dhyp[i].toFixed(2)} km<br/>Tp resid=${lm.r[i].toFixed(3)} s, Ts resid=${lm.r[N+i].toFixed(3)} s`);
+  }
+  drawEpicenter({x: x_km, y: y_km}, cLat, cLon);
+
+  const boundsPts = codes.map(c => [state.stations[c].lat, state.stations[c].lon]);
+  boundsPts.push([epiLL.lat, epiLL.lon]);
+  state.map.fitBounds(L.latLngBounds(boundsPts).pad(0.2));
+}
+
 /* ---------- Solve ---------- */
 function solveByChordIntersection(){
   const checked=[...els.triChecks.querySelectorAll("input[type=checkbox]:checked")].map(cb=>cb.dataset.code);
   if(checked.length!==3){ alert("Select exactly 3 stations."); return; }
 
-  const Vp=Number(els.vpIn.value);
-  const vpvs=Number(els.vpvsIn.value);
-  if(!(Vp>0) || !(vpvs>1)){ alert("Set valid Vp and Vp/Vs."); return; }
-  const Vs = Vp / vpvs;
-  if(!(Vs>0) || !(Vp>Vs)){ alert("Invalid velocities: must have Vp > Vs > 0."); return; }
+  const Vp_seed = Number(els.vpIn.value);
+  const vpvs    = Number(els.vpvsIn.value);
+  if(!(Vp_seed>0) || !(vpvs>1)){ alert("Set valid Vp seed and Vp/Vs."); return; }
+  if(!(Vp_seed/vpvs > 0) || !(Vp_seed > Vp_seed/vpvs)){ alert("Invalid velocities: need Vp > Vs > 0."); return; }
+
+  const sigPick   = Math.max(0, Number(els.sigPickIn.value)  || 0);
+  const sigVpUser = Math.max(0, Number(els.sigVpIn.value)    || 0);
+  const sigVpVs   = Math.max(0, Number(els.sigVpVsIn.value)  || 0);
+
+  // Input validation up front (independent of compute path)
+  for(const code of checked){
+    const s=state.stations[code];
+    const pk=state.picks[code]||{};
+    if(!Number.isFinite(s?.lat)||!Number.isFinite(s?.lon)){ alert(`Station ${code} missing STLA/STLO`); return; }
+    if(!Number.isFinite(pk.p_rel)||!Number.isFinite(pk.s_rel)){ alert(`Station ${code} needs P & S picks`); return; }
+    if(!(pk.s_rel - pk.p_rel > 0)){ alert(`Station ${code}: Ts must be after Tp (dt>0).`); return; }
+  }
 
   els.DhypCheckTable.innerHTML="";
   els.depthTable.innerHTML="";
   clearSolveLayers();
 
-  const Dhyp=[]; const lats=[]; const lons=[];
-  let warn=false;
-  const REL_TOL=1e-9, ABS_TOL=1e-9;
+  // Refine Vp via apparent-velocity iteration if Wadati was computed; otherwise fall back to seed.
+  let Vp, best, vpInfo = null, sigVp = sigVpUser;
+  if(Number.isFinite(state.wadati?.To)){
+    const ref = refineVpApparent(checked, vpvs, Vp_seed);
+    if(!ref.ok){
+      alert(
+        `Vp refinement failed: ${ref.reason}\n\n` +
+        `This usually means the picks at these 3 stations are mutually inconsistent ` +
+        `(e.g., one S pick is on the wrong phase, or one P pick is off by > a second).\n\n` +
+        `Tips:\n` +
+        `  • Re-inspect picks on the offending station(s); the Wadati diagram shows outliers.\n` +
+        `  • Use the joint LS solver in section 5 — it doesn't depend on chord geometry ` +
+        `and tolerates inconsistent picks via residual minimization.`
+      );
+      return;
+    }
+    Vp = ref.Vp;
+    best = ref.sol;
+    vpInfo = ref;
+    // Persist the refined Vp to the input field ONLY if the iteration cleanly
+    // converged inside the physical band. A non-converged or warning-flagged
+    // run would otherwise pollute the seed for the next Solve.
+    if(ref.converged && !ref.warning && Vp >= 3.5 && Vp <= 8.5){
+      els.vpIn.value = Vp.toFixed(3);
+    }
+    // Data-driven σ(Vp): use the larger of (per-station scatter) and (user-typed σ) so we never
+    // under-state uncertainty just because three stations happened to agree.
+    sigVp = Math.max(sigVpUser, ref.sigVp_data);
+    const statusBits = [];
+    statusBits.push(ref.converged ? "converged" : "stopped early");
+    statusBits.push(`${ref.iterations} iter`);
+    if(ref.warning) statusBits.push("⚠ " + ref.warning);
+    els.vpAppOut.textContent =
+      `${Vp.toFixed(3)} ± ${ref.sigVp_data.toFixed(3)} km/s   `
+      + `[arithmetic mean across ${ref.nUsed} stations; median = ${ref.Vp_median.toFixed(3)}; `
+      + `SE of mean = ${ref.sigVp_mean.toFixed(3)}] `
+      + `(${statusBits.join("; ")})`;
+    // Per-station detail in a tooltip so the line stays readable with N ≫ 3.
+    els.vpAppOut.title =
+      "Per-station apparent Vp (Dhyp_geom / (Tp − To)) at converged chord-method epicenter:\n"
+      + ref.perStationCodes.map((c, i) => `  ${c}: ${ref.perStation[i].toFixed(3)} km/s`).join("\n");
+    if(ref.warning) console.warn("Vp refinement:", ref.warning);
+  } else {
+    Vp = Vp_seed;
+    best = computeSolution(checked, state.picks, Vp, vpvs);
+    if(!best.ok){ alert(`Solve failed: ${best.reason}`); return; }
+    els.vpAppOut.textContent = "(run 'Compute Wadati' first to derive Vp from data)";
+  }
 
-  for(const code of checked){
-    const s=state.stations[code];
-    const pk=state.picks[code]||{};
-    if(!Number.isFinite(s.lat)||!Number.isFinite(s.lon)){ alert(`Station ${code} missing STLA/STLO`); return; }
-    if(!Number.isFinite(pk.p_rel)||!Number.isFinite(pk.s_rel)){ alert(`Station ${code} needs P & S picks`); return; }
+  // Independent cross-check: Dhyp via (Tp - To)·Vp from Wadati origin time.
+  // Test against a 3-σ threshold derived from σ(pick):
+  //     σ_expected = Vp · √2 · σ_pick / (Vp/Vs − 1)
+  // (this is the propagated 1-σ scatter of |Df − Dw| from independent P/S pick noise).
+  const haveWadati = Number.isFinite(state.wadati?.To);
+  const ABS_TOL = 1e-9;
+  const sigmaExpected = (sigPick > 0 && vpvs > 1)
+    ? Vp * Math.SQRT2 * sigPick / (vpvs - 1)
+    : 0;
+  const warnThreshold = Math.max(3 * sigmaExpected, ABS_TOL);
+  const offenders = [];
+
+  for(let i=0;i<checked.length;i++){
+    const code = checked[i];
+    const s  = state.stations[code];
+    const pk = state.picks[code];
     const dt = pk.s_rel - pk.p_rel;
-    if(!(dt>0)){ alert(`Station ${code}: Ts must be after Tp (dt>0).`); return; }
-
-    const Df = Dhyp_from_formula(dt, Vp, Vs);
-    const Ds = Dhyp_from_slowness(dt, Vp, Vs);
-    const absDiff = Math.abs(Df - Ds);
-    const relDiff = absDiff / Math.max(1e-12, Math.abs(Df));
-    if(absDiff>ABS_TOL && relDiff>REL_TOL) warn=true;
-
-    Dhyp.push(Df);
-    lats.push(s.lat); lons.push(s.lon);
-
+    const Df = best.Dhyp[i];
+    let Dw = NaN, absDiff = NaN;
+    if(haveWadati && Number.isFinite(s.start_epoch)){
+      const TpAbs = s.start_epoch + pk.p_rel;
+      Dw = (TpAbs - state.wadati.To) * Vp;
+      absDiff = Math.abs(Df - Dw);
+      if(absDiff > warnThreshold){
+        offenders.push({code, absDiff, relPct: 100*absDiff/Math.max(1e-12, Math.abs(Df))});
+      }
+    }
     const tr=document.createElement("tr");
     tr.innerHTML = `
-      <td class="mono">${code}</td>
+      <td class="mono">${escapeHtml(code)}</td>
       <td class="mono">${dt.toFixed(3)}</td>
-      <td class="mono">${Df.toFixed(6)}</td>
-      <td class="mono">${Ds.toFixed(6)}</td>
-      <td class="mono">${absDiff.toExponential(3)}</td>
-      <td class="mono">${relDiff.toExponential(3)}</td>
+      <td class="mono">${Df.toFixed(3)}</td>
+      <td class="mono">${Number.isFinite(Dw)?Dw.toFixed(3):"-"}</td>
+      <td class="mono">${Number.isFinite(absDiff)?absDiff.toFixed(3):"-"}</td>
     `;
     els.DhypCheckTable.appendChild(tr);
   }
-  if(warn) alert("WARNING: Dhyp validation mismatch detected. Check Vp/Vs and picks.");
 
-  const lat0=(lats[0]+lats[1]+lats[2])/3;
-  const lon0=(lons[0]+lons[1]+lons[2])/3;
-
-  const C = [
-    equirect_xy(lats[0],lons[0],lat0,lon0),
-    equirect_xy(lats[1],lons[1],lat0,lon0),
-    equirect_xy(lats[2],lons[2],lat0,lon0),
-  ];
-
-  drawHypoCircles(checked, Dhyp);
-
-  const pairs = [
-    {i:0,j:1,color:"#f59e0b"},
-    {i:0,j:2,color:"#a78bfa"},
-    {i:1,j:2,color:"#60a5fa"},
-  ];
-  const chords=[];
-  for(const pr of pairs){
-    const inter = circleCircleIntersections(C[pr.i], Dhyp[pr.i], C[pr.j], Dhyp[pr.j]);
-    if(!inter.ok){
-      alert(`Circles ${checked[pr.i]} & ${checked[pr.j]}: ${inter.msg}. Cannot form chord.`);
-      return;
-    }
-    chords.push({p1:inter.p1, p2:inter.p2});
-    drawChord(inter.p1, inter.p2, lat0, lon0, pr.color);
+  if(offenders.length){
+    const sigmaTxt = sigmaExpected > 0
+      ? `expected σ = ${sigmaExpected.toFixed(2)} km (from σ_pick = ${sigPick.toFixed(2)} s); threshold = ${warnThreshold.toFixed(2)} km`
+      : `σ_pick = 0 → strict threshold (any residual flagged)`;
+    const lines = offenders.map(o =>
+      `  ${o.code}:  |ΔDhyp| = ${o.absDiff.toFixed(2)} km  (${o.relPct.toFixed(1)}%)`
+    );
+    alert(
+      `Dhyp cross-check: ${offenders.length} station(s) deviate from the Wadati-line ` +
+      `prediction by more than 3 × expected pick noise.\n` +
+      `${sigmaTxt}\n\n` +
+      `Offending station(s):\n${lines.join("\n")}\n\n` +
+      `Likely causes: (a) bad P or S pick at the listed station(s); ` +
+      `(b) Vp/Vs in the input differs from the Wadati slope+1; ` +
+      `(c) station truly off the linear Wadati trend.`
+    );
   }
 
-  let epiRes = lineIntersection(chords[0].p1, chords[0].p2, chords[1].p1, chords[1].p2);
-  if(!epiRes.ok){
-    epiRes = lineIntersection(chords[0].p1, chords[0].p2, chords[2].p1, chords[2].p2);
-    if(!epiRes.ok){
-      alert("Chord intersection failed (parallel/degenerate).");
-      return;
-    }
+  // Draw deterministic geometry on the map
+  drawHypoCircles(checked, best.Dhyp);
+  const chordColors=["#f59e0b","#a78bfa","#60a5fa"];
+  for(let k=0;k<best.chords.length;k++){
+    drawChord(best.chords[k].p1, best.chords[k].p2, best.lat0, best.lon0, chordColors[k]);
+  }
+  drawEpicenter(best.epi, best.lat0, best.lon0);
+
+  // ---- Monte Carlo uncertainty propagation ----
+  const N_TRIALS = 400;
+  const mc = monteCarloUncertainty(checked, Vp, vpvs, sigPick, sigVp, sigVpVs, N_TRIALS);
+
+  const latS = summarize(mc.lats);
+  const lonS = summarize(mc.lons);
+  const depS = summarize(mc.depths);
+
+  // Convert lat/lon σ from degrees to km at the epicenter
+  const cosLat = Math.cos(toRad(best.epiLL.lat));
+  const sigLatKm = Number.isFinite(latS.sigma) ? latS.sigma*(Math.PI/180)*R_EARTH        : NaN;
+  const sigLonKm = Number.isFinite(lonS.sigma) ? lonS.sigma*(Math.PI/180)*R_EARTH*cosLat : NaN;
+
+  const allSigZero = (sigPick===0 && sigVp===0 && sigVpVs===0);
+  const mcOK = (mc.depths.length >= N_TRIALS*0.5);
+
+  if(allSigZero){
+    els.epiOut.textContent =
+      `lat=${best.epiLL.lat.toFixed(4)}°, lon=${best.epiLL.lon.toFixed(4)}°  `
+      + `(geom. residual ${best.geomResidKm.toFixed(2)} km)`;
+    els.depthOut.textContent = `${best.depth.toFixed(2)} km  (no MC: all input σ = 0)`;
+  } else if(!mcOK){
+    els.epiOut.textContent =
+      `lat=${best.epiLL.lat.toFixed(4)}°, lon=${best.epiLL.lon.toFixed(4)}°  `
+      + `(MC unstable: ${mc.depths.length}/${N_TRIALS} trials succeeded; geom. residual ${best.geomResidKm.toFixed(2)} km)`;
+    els.depthOut.textContent = `${best.depth.toFixed(2)} km  (MC unreliable: ${mc.depths.length}/${N_TRIALS} trials)`;
+  } else {
+    els.epiOut.textContent =
+      `lat=${best.epiLL.lat.toFixed(4)}° ± ${latS.sigma.toFixed(4)}° (±${sigLatKm.toFixed(2)} km), `
+      + `lon=${best.epiLL.lon.toFixed(4)}° ± ${lonS.sigma.toFixed(4)}° (±${sigLonKm.toFixed(2)} km); `
+      + `geom. residual ${best.geomResidKm.toFixed(2)} km`;
+    els.depthOut.textContent =
+      `${best.depth.toFixed(2)} ± ${depS.sigma.toFixed(2)} km  `
+      + `[68% CI ${depS.q16.toFixed(2)}–${depS.q84.toFixed(2)} km; MC ${mc.depths.length}/${N_TRIALS}]`;
   }
 
-  const epi = epiRes.p;
-  const epiLL = drawEpicenter(epi, lat0, lon0);
-
-  // ✅ epicentral distance as geodesic (more precise)
-  const Depi = [];
   for(let i=0;i<3;i++){
-    const st = state.stations[checked[i]];
-    Depi.push(haversine_km(epiLL.lat, epiLL.lon, st.lat, st.lon));
-  }
-
-  const depthRes = robustDepthKm(Dhyp, Depi);
-  if(!depthRes.ok){
-    alert("Depth could not be computed: Dhyp < Depi for all stations (check picks/velocities).");
-    return;
-  }
-
-  els.epiOut.textContent = `lat=${epiLL.lat.toFixed(4)}, lon=${epiLL.lon.toFixed(4)}`;
-  els.depthOut.textContent = `${depthRes.med.toFixed(2)} ± ${depthRes.robustStd.toFixed(2)} km`;
-
-  for(let i=0;i<3;i++){
-    const v = Dhyp[i]*Dhyp[i] - Depi[i]*Depi[i];
+    const v = best.Dhyp[i]*best.Dhyp[i] - best.Depi[i]*best.Depi[i];
     const hi = v>0 ? Math.sqrt(v) : NaN;
     const tr=document.createElement("tr");
     tr.innerHTML = `
-      <td class="mono">${checked[i]}</td>
-      <td class="mono">${Dhyp[i].toFixed(3)}</td>
-      <td class="mono">${Depi[i].toFixed(3)}</td>
+      <td class="mono">${escapeHtml(checked[i])}</td>
+      <td class="mono">${best.Dhyp[i].toFixed(3)}</td>
+      <td class="mono">${best.Depi[i].toFixed(3)}</td>
       <td class="mono">${Number.isFinite(hi)?hi.toFixed(3):"NaN"}</td>
     `;
     els.depthTable.appendChild(tr);
   }
 
+  const s0=state.stations[checked[0]], s1=state.stations[checked[1]], s2=state.stations[checked[2]];
   const boundsPts = [
-    [lats[0],lons[0]],[lats[1],lons[1]],[lats[2],lons[2]],[epiLL.lat, epiLL.lon]
+    [s0.lat,s0.lon],[s1.lat,s1.lon],[s2.lat,s2.lon],[best.epiLL.lat, best.epiLL.lon]
   ];
   state.map.fitBounds(L.latLngBounds(boundsPts).pad(0.25));
 }
@@ -1103,6 +1766,7 @@ els.btnPickP.onclick=()=>setPickMode("P");
 els.btnPickS.onclick=()=>setPickMode("S");
 els.btnWadati.onclick=()=>computeWadati();
 els.btnSolve.onclick=()=>solveByChordIntersection();
+els.btnSolveJoint.onclick=()=>solveJointLS();
 
 els.btnClearStation.onclick=()=>{
   if(!state.current) return;
@@ -1115,10 +1779,19 @@ els.btnClearAll.onclick=()=>{
   state.wadati={xs:[],ys:[],m:NaN,b:NaN,To:NaN,vpvs:NaN};
   els.originTime.textContent="-";
   els.vpvsOut.textContent="-";
+  els.vpAppOut.textContent="-";
   els.epiOut.textContent="-";
   els.depthOut.textContent="-";
   els.DhypCheckTable.innerHTML="";
   els.depthTable.innerHTML="";
+  els.njOut.textContent="-";
+  els.epiJointOut.textContent="-";
+  els.depthJointOut.textContent="-";
+  els.toJointOut.textContent="-";
+  els.vpJointOut.textContent="-";
+  els.rmsJointOut.textContent="-";
+  els.iterJointOut.textContent="-";
+  els.residTableJoint.innerHTML="";
   renderPicks(); drawWave(); drawWadati();
   updateMapStations();
   clearSolveLayers();
@@ -1136,10 +1809,19 @@ async function loadSACFiles(files){
 
   els.originTime.textContent="-";
   els.vpvsOut.textContent="-";
+  els.vpAppOut.textContent="-";
   els.epiOut.textContent="-";
   els.depthOut.textContent="-";
   els.DhypCheckTable.innerHTML="";
   els.depthTable.innerHTML="";
+  els.njOut.textContent="-";
+  els.epiJointOut.textContent="-";
+  els.depthJointOut.textContent="-";
+  els.toJointOut.textContent="-";
+  els.vpJointOut.textContent="-";
+  els.rmsJointOut.textContent="-";
+  els.iterJointOut.textContent="-";
+  els.residTableJoint.innerHTML="";
   clearSolveLayers();
 
   function pyGetNumber(d,key){ const v=d.get(key); const out=Number(v); if(v&&typeof v.destroy==="function") v.destroy(); return out; }
