@@ -6,4 +6,4 @@ https://www.youtube.com/watch?v=VPGDtdzVXfE&list=PLWo-OJwhAN0U&index=4
 
 https://www.youtube.com/watch?v=nm6ueAzgAe0&list=PLWo-OJwhAN0U&index=5
 
-You can try EQLocate using the attached SAC files, "SAC.rar"
+You can try EQLocate using the attached SAC files, "Korea2007.zip"
